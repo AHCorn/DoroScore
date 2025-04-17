@@ -1,9 +1,5 @@
 package config
 
-import (
-	"os"
-)
-
 // Config 应用配置
 type Config struct {
 	HBase  HBaseConfig
@@ -28,23 +24,14 @@ type ServerConfig struct {
 func GetConfig() *Config {
 	return &Config{
 		HBase: HBaseConfig{
-			Host:       getEnv("HBASE_HOST", "192.168.2.154"),
-			ZkQuorum:   getEnv("HBASE_ZKQUORUM", "192.168.2.154"),
-			ZkPort:     getEnv("HBASE_ZKPORT", "2181"),
-			MasterPort: getEnv("HBASE_MASTERPORT", "16000"),
-			ThriftPort: getEnv("HBASE_THRIFTPORT", "9090"),
+			Host:       "192.168.2.154",
+			ZkQuorum:   "192.168.2.154",
+			ZkPort:     "2181",
+			MasterPort: "16000",
+			ThriftPort: "9090",
 		},
 		Server: ServerConfig{
-			Port: getEnv("SERVER_PORT", "5000"),
+			Port: "5000",
 		},
 	}
-}
-
-// getEnv 获取环境变量，若环境变量不存在则返回默认值
-func getEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
-	}
-	return value
 }
