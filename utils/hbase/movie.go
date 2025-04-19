@@ -103,9 +103,13 @@ func GetMovieWithAllData(ctx context.Context, movieID string) (map[string]interf
 
 // GetMovieRatings 获取电影评分
 func GetMovieRatings(ctx context.Context, movieID string) (map[string]interface{}, error) {
-	// 创建scan请求，指定只获取rating列族下的rating列
-	scanRequest, err := hrpc.NewScanStr(ctx, "moviedata",
-		hrpc.Families(map[string][]string{"rating": {"rating"}}))
+	// 创建scan请求，使用行键前缀匹配查找指定movieID的所有评分
+	// 由于现在使用的是复合键movieId_userId，需要使用前缀扫描
+	startRow := movieID + "_" // 起始行：movieId_
+	endRow := movieID + "`"   // 结束行：使用比"_"大的字符，确保扫描所有以movieId_开头的行
+
+	scanRequest, err := hrpc.NewScanRangeStr(ctx, "moviedata", startRow, endRow,
+		hrpc.Families(map[string][]string{"rating": nil}))
 	if err != nil {
 		return nil, err
 	}
@@ -124,33 +128,42 @@ func GetMovieRatings(ctx context.Context, movieID string) (map[string]interface{
 			break // 扫描结束或发生错误
 		}
 
-		// 跳过不匹配行前缀的结果
+		// 跳过不匹配的结果
 		if len(result.Cells) == 0 {
 			continue
 		}
 
-		// 检查行ID是否以指定的movieID开头
+		// 解析复合键中的userId
 		rowID := string(result.Cells[0].Row)
-		if !strings.HasPrefix(rowID, movieID) {
-			continue
+		parts := strings.Split(rowID, "_")
+		if len(parts) != 2 {
+			continue // 跳过不符合格式的行键
 		}
+
+		userId := parts[1]
 
 		// 处理每个结果
 		for _, cell := range result.Cells {
-			// 确保这是rating:rating列
-			if string(cell.Family) == "rating" && string(cell.Qualifier) == "rating" {
+			// 过滤出rating列
+			qualifier := string(cell.Qualifier)
+			if string(cell.Family) == "rating" && qualifier == "rating" {
 				// 获取评分值
 				ratingValue, err := strconv.ParseFloat(string(cell.Value), 64)
 				if err == nil {
 					// 将评分添加到数组中
 					ratings = append(ratings, ratingValue)
 
-					// 构建评分数据
+					// 构建评分数据，包含userId
 					ratingInfo := map[string]interface{}{
-						"rowId":     rowID,
-						"rating":    ratingValue,
-						"timestamp": cell.Timestamp,
+						"userId": userId,
+						"rating": ratingValue,
 					}
+
+					// 添加时间戳，需要确保正确处理指针类型
+					if cell.Timestamp != nil {
+						ratingInfo["timestamp"] = int64(*cell.Timestamp)
+					}
+
 					ratingsData = append(ratingsData, ratingInfo)
 				}
 			}
@@ -203,6 +216,52 @@ func GetMovieRatings(ctx context.Context, movieID string) (map[string]interface{
 
 // GetMovieTags 获取电影标签
 func GetMovieTags(ctx context.Context, movieID string) (map[string]map[string][]byte, error) {
-	families := []string{"tag"}
-	return GetMovieWithFamilies(ctx, movieID, families)
+	// 使用行键前缀扫描来获取指定电影的所有标签
+	startRow := movieID + "_" // 起始行: movieId_
+	endRow := movieID + "`"   // 结束行: 确保扫描所有以movieId_开头的行
+
+	scanRequest, err := hrpc.NewScanRangeStr(ctx, "moviedata", startRow, endRow,
+		hrpc.Families(map[string][]string{"tag": nil}))
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取扫描器
+	scanner := hbaseClient.Scan(scanRequest)
+
+	// 用于存储标签数据
+	resultMap := make(map[string]map[string][]byte)
+	resultMap["tag"] = make(map[string][]byte)
+
+	// 扫描所有结果
+	for {
+		result, err := scanner.Next()
+		if err != nil {
+			break // 扫描结束或发生错误
+		}
+
+		if len(result.Cells) == 0 {
+			continue
+		}
+
+		// 处理每个结果
+		for _, cell := range result.Cells {
+			if string(cell.Family) == "tag" {
+				qualifier := string(cell.Qualifier)
+				if qualifier == "tag" {
+					// 提取用户ID
+					rowID := string(cell.Row)
+					parts := strings.Split(rowID, "_")
+					if len(parts) == 2 {
+						userId := parts[1]
+						// 使用user_tag:userId形式作为键
+						key := "user_tag:" + userId
+						resultMap["tag"][key] = cell.Value
+					}
+				}
+			}
+		}
+	}
+
+	return resultMap, nil
 }

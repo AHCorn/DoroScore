@@ -10,7 +10,7 @@ import (
 	"github.com/tsuna/gohbase/hrpc"
 )
 
-// SearchMovies 搜索电影（带缓存）
+// SearchMovies 搜索电影（带个缓存🚀）
 func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 	// 构建缓存键
 	cacheKey := fmt.Sprintf("search:%s:%d:%d", query, page, perPage)
@@ -40,7 +40,7 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 			break // 到达结尾
 		}
 
-		// 获取行键（即movieId）
+		// 获取行键（movieId）
 		var movieID string
 		for _, cell := range res.Cells {
 			movieID = string(cell.Row)
