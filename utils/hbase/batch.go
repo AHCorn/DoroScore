@@ -117,3 +117,40 @@ func parseFloat(s string, defaultValue float64) float64 {
 	}
 	return v
 }
+
+// GetMoviesRatingsBatch 批量获取多部电影的评分信息
+func GetMoviesRatingsBatch(ctx context.Context, movieIDs []string) (map[string]map[string]interface{}, error) {
+	results := make(map[string]map[string]interface{})
+
+	// 使用goroutine并发获取多部电影评分
+	type result struct {
+		id   string
+		data map[string]interface{}
+		err  error
+	}
+
+	resultChan := make(chan result, len(movieIDs))
+
+	for _, id := range movieIDs {
+		go func(movieID string) {
+			data, err := GetMovieRatings(ctx, movieID)
+			resultChan <- result{id: movieID, data: data, err: err}
+		}(id)
+	}
+
+	// 收集结果
+	for range movieIDs {
+		res := <-resultChan
+		if res.err == nil && res.data != nil {
+			results[res.id] = res.data
+		} else {
+			// 为出错的电影提供默认值
+			results[res.id] = map[string]interface{}{
+				"avgRating": 0.0,
+				"count":     0,
+			}
+		}
+	}
+
+	return results, nil
+}

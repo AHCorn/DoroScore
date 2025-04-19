@@ -201,3 +201,8 @@ func GetTotalMoviesCount(ctx context.Context) (int, error) {
 
 	return count, nil
 }
+
+// GetMoviesRatingsBatch 批量获取多部电影的评分信息
+func GetMoviesRatingsBatch(ctx context.Context, movieIDs []string) (map[string]map[string]interface{}, error) {
+	return hbase.GetMoviesRatingsBatch(ctx, movieIDs)
+}
