@@ -30,6 +30,7 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 
 	scanner := utils.GetClient().Scan(scan)
 	matchedMovies := []Movie{}
+	matchedMovieIDs := []string{} // 用于收集匹配的电影ID，后续批量获取评分
 
 	// 将查询转为小写以进行不区分大小写的匹配
 	queryLower := strings.ToLower(query)
@@ -86,19 +87,11 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 					movie.Genres = genres
 				}
 
-				// 使用 utils.GetMovieRatings 获取评分数据，与 GetMovieByID 保持一致
-				ratingData, err := utils.GetMovieRatings(ctx, movieID)
-				if err == nil && ratingData != nil {
-					if avgRating, ok := ratingData["avgRating"].(float64); ok {
-						movie.AvgRating = avgRating
-					}
+				// 不再在这里获取评分，仅使用默认值或保存在movieData中的值
+				if avgRating, ok := movieData["avgRating"].(float64); ok {
+					movie.AvgRating = avgRating
 				} else {
-					// 如果获取评分失败，尝试使用 movieData 中的评分，最后默认为 0
-					if avgRating, ok := movieData["avgRating"].(float64); ok {
-						movie.AvgRating = avgRating
-					} else {
-						movie.AvgRating = 0.0
-					}
+					movie.AvgRating = 0.0
 				}
 
 				// 添加标签
@@ -107,6 +100,7 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 				}
 
 				matchedMovies = append(matchedMovies, movie)
+				matchedMovieIDs = append(matchedMovieIDs, movieID)
 				continue
 			}
 		}
@@ -132,19 +126,11 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 
 					movie.Genres = genres
 
-					// 使用 utils.GetMovieRatings 获取评分数据，与 GetMovieByID 保持一致
-					ratingData, err := utils.GetMovieRatings(ctx, movieID)
-					if err == nil && ratingData != nil {
-						if avgRating, ok := ratingData["avgRating"].(float64); ok {
-							movie.AvgRating = avgRating
-						}
+					// 不再在这里获取评分，仅使用默认值或保存在movieData中的值
+					if avgRating, ok := movieData["avgRating"].(float64); ok {
+						movie.AvgRating = avgRating
 					} else {
-						// 如果获取评分失败，尝试使用 movieData 中的评分，最后默认为 0
-						if avgRating, ok := movieData["avgRating"].(float64); ok {
-							movie.AvgRating = avgRating
-						} else {
-							movie.AvgRating = 0.0
-						}
+						movie.AvgRating = 0.0
 					}
 
 					// 添加标签
@@ -153,7 +139,24 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 					}
 
 					matchedMovies = append(matchedMovies, movie)
+					matchedMovieIDs = append(matchedMovieIDs, movieID)
 					break
+				}
+			}
+		}
+	}
+
+	// 如果有匹配结果，批量获取评分数据
+	if len(matchedMovieIDs) > 0 {
+		ratingsMap, err := utils.GetMoviesRatingsBatch(ctx, matchedMovieIDs)
+		if err == nil {
+			// 使用批量获取的评分数据更新电影评分
+			for i := range matchedMovies {
+				movieID := matchedMovies[i].MovieID
+				if rating, ok := ratingsMap[movieID]; ok {
+					if avgRating, ok := rating["avgRating"].(float64); ok {
+						matchedMovies[i].AvgRating = avgRating
+					}
 				}
 			}
 		}
