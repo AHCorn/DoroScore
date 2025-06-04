@@ -1,0 +1,19 @@
+# DoroScore 配置文件
+server:
+  port: "5000"
+  
+hbase:
+  host: "192.168.2.154"
+  zk_quorum: "192.168.2.154"
+  zk_port: "2181"
+  master_port: "16000"
+  thrift_port: "9090"
+  
+cache:
+  cleanup_interval: "5m"
+  default_expiration: "10m"
+  
+logging:
+  level: "info"
+  format: "text"
+  timestamp: true 

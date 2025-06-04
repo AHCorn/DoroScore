@@ -13,7 +13,7 @@ func SetupRouter() *gin.Engine {
 	// 创建默认路由
 	router := gin.Default()
 
-	// 添加CORS中间件，允许所有来源、方法和头部
+	// 添加CORS中间件
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -27,7 +27,8 @@ func SetupRouter() *gin.Engine {
 	api := router.Group("/api")
 
 	// 创建控制器实例
-	movieController := &controllers.MovieController{}
+	movieController := controllers.NewMovieController()
+	systemController := controllers.NewSystemController()
 
 	// 电影相关路由
 	movies := api.Group("/movies")
@@ -45,14 +46,12 @@ func SetupRouter() *gin.Engine {
 		ratings.GET("/movie/:id", movieController.GetMovieRatings)
 	}
 
-	// 系统日志路由
-	// GET /api/system/logs - 获取系统日志
-	api.GET("/system/logs", movieController.GetSystemLogs)
+	// 系统相关路由
+	system := api.Group("/system")
+	{
+		system.GET("/logs", systemController.GetSystemLogs)
+		system.GET("/cache", systemController.GetCacheStats)
+	}
 
-	// 添加缓存统计路由
-	// GET /api/system/cache - 获取缓存统计信息
-	api.GET("/system/cache", movieController.GetCacheStats)
-
-	// 返回路由
 	return router
 }
