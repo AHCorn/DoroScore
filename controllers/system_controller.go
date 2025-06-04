@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"context"
+	"gohbase/models"
 	"gohbase/utils"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +29,36 @@ func (sc *SystemController) GetSystemLogs(c *gin.Context) {
 // GetCacheStats 获取缓存统计信息
 func (sc *SystemController) GetCacheStats(c *gin.Context) {
 	stats := utils.Cache.Stats()
+	utils.SuccessData(c, gin.H{
+		"status": "success",
+		"stats":  stats,
+	})
+}
+
+// BuildSearchIndex 构建搜索索引
+func (sc *SystemController) BuildSearchIndex(c *gin.Context) {
+	ctx := context.Background()
+	searchIndex := models.GetSearchIndex()
+
+	// 在后台异步构建索引
+	go func() {
+		err := searchIndex.BuildSearchIndex(ctx)
+		if err != nil {
+			// 日志记录错误，但不影响响应
+		}
+	}()
+
+	utils.SuccessData(c, gin.H{
+		"status":  "success",
+		"message": "搜索索引构建已开始，请稍后查看状态",
+	})
+}
+
+// GetSearchIndexStats 获取搜索索引统计信息
+func (sc *SystemController) GetSearchIndexStats(c *gin.Context) {
+	searchIndex := models.GetSearchIndex()
+	stats := searchIndex.GetIndexStats()
+
 	utils.SuccessData(c, gin.H{
 		"status": "success",
 		"stats":  stats,
