@@ -10,7 +10,7 @@ import (
 	"github.com/tsuna/gohbase/hrpc"
 )
 
-// SearchMovies 搜索电影（带个缓存🚀）
+// SearchMovies 搜索电影（带缓存🚀）- 适配新的数据库结构
 func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 	// 构建缓存键
 	cacheKey := fmt.Sprintf("search:%s:%d:%d", query, page, perPage)
@@ -22,13 +22,16 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 
 	ctx := context.Background()
 
-	// 创建全表扫描
-	scan, err := hrpc.NewScanStr(ctx, "moviedata")
+	// 创建全表扫描，使用新的表名movies
+	scan, err := hrpc.NewScanStr(ctx, "movies")
 	if err != nil {
 		return nil, err
 	}
 
-	scanner := utils.GetClient().Scan(scan)
+	scanner := utils.GetClient().(interface {
+		Scan(request *hrpc.Scan) hrpc.Scanner
+	}).Scan(scan)
+
 	matchedMovies := []Movie{}
 	matchedMovieIDs := []string{} // 用于收集匹配的电影ID，后续批量获取评分
 
@@ -41,16 +44,20 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 			break // 到达结尾
 		}
 
-		// 获取行键（movieId）
-		var movieID string
-		for _, cell := range res.Cells {
-			movieID = string(cell.Row)
-			break
-		}
-
-		if movieID == "" {
+		// 获取行键
+		if len(res.Cells) == 0 {
 			continue
 		}
+
+		rowKey := string(res.Cells[0].Row)
+
+		// 只处理_info行（电影基本信息）
+		if !strings.HasSuffix(rowKey, "_info") {
+			continue
+		}
+
+		// 提取电影ID
+		movieID := strings.TrimSuffix(rowKey, "_info")
 
 		// 手动构建结果映射
 		resultMap := make(map[string]map[string][]byte)
@@ -87,7 +94,7 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 					movie.Genres = genres
 				}
 
-				// 不再在这里获取评分，仅使用默认值或保存在movieData中的值
+				// 使用预计算的评分或默认值
 				if avgRating, ok := movieData["avgRating"].(float64); ok {
 					movie.AvgRating = avgRating
 				} else {
@@ -126,7 +133,7 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 
 					movie.Genres = genres
 
-					// 不再在这里获取评分，仅使用默认值或保存在movieData中的值
+					// 使用预计算的评分或默认值
 					if avgRating, ok := movieData["avgRating"].(float64); ok {
 						movie.AvgRating = avgRating
 					} else {
@@ -146,16 +153,27 @@ func SearchMovies(query string, page, perPage int) (*MovieList, error) {
 		}
 	}
 
-	// 如果有匹配结果，批量获取评分数据
+	// 如果有匹配结果且没有预计算的评分，批量获取评分数据
 	if len(matchedMovieIDs) > 0 {
-		ratingsMap, err := utils.GetMoviesRatingsBatch(ctx, matchedMovieIDs)
-		if err == nil {
-			// 使用批量获取的评分数据更新电影评分
-			for i := range matchedMovies {
-				movieID := matchedMovies[i].MovieID
-				if rating, ok := ratingsMap[movieID]; ok {
-					if avgRating, ok := rating["avgRating"].(float64); ok {
-						matchedMovies[i].AvgRating = avgRating
+		// 检查是否需要更新评分（如果电影没有预计算的评分）
+		needsRatingUpdate := false
+		for _, movie := range matchedMovies {
+			if movie.AvgRating == 0.0 {
+				needsRatingUpdate = true
+				break
+			}
+		}
+
+		if needsRatingUpdate {
+			ratingsMap, err := utils.GetMoviesRatingsBatch(ctx, matchedMovieIDs)
+			if err == nil {
+				// 使用批量获取的评分数据更新电影评分
+				for i := range matchedMovies {
+					movieID := matchedMovies[i].MovieID
+					if rating, ok := ratingsMap[movieID]; ok {
+						if avgRating, ok := rating["avgRating"].(float64); ok {
+							matchedMovies[i].AvgRating = avgRating
+						}
 					}
 				}
 			}

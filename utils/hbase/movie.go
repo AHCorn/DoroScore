@@ -8,9 +8,10 @@ import (
 	"github.com/tsuna/gohbase/hrpc"
 )
 
-// GetMovie 根据ID获取电影信息
+// GetMovie 根据ID获取电影的基本信息
 func GetMovie(ctx context.Context, movieID string) (map[string]map[string][]byte, error) {
-	get, err := hrpc.NewGetStr(ctx, "moviedata", movieID)
+	// 根据新的数据库结构，获取电影的info数据
+	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_info")
 	if err != nil {
 		return nil, err
 	}
@@ -42,126 +43,100 @@ func GetMovie(ctx context.Context, movieID string) (map[string]map[string][]byte
 	return resultMap, nil
 }
 
-// GetMovieWithFamilies 根据ID和指定的列族获取电影信息
-func GetMovieWithFamilies(ctx context.Context, movieID string, families []string) (map[string]map[string][]byte, error) {
-	// 构建列族映射
-	familiesMap := make(map[string][]string)
-	for _, family := range families {
-		familiesMap[family] = nil
-	}
-
-	// 创建Get请求并指定列族
-	get, err := hrpc.NewGetStr(ctx, "moviedata", movieID, hrpc.Families(familiesMap))
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := hbaseClient.Get(get)
-	if err != nil {
-		return nil, err
-	}
-
-	// 如果没有找到电影
-	if result.Cells == nil || len(result.Cells) == 0 {
-		return nil, nil
-	}
-
-	// 手动构建结果映射
-	resultMap := make(map[string]map[string][]byte)
-
-	for _, cell := range result.Cells {
-		family := string(cell.Family)
-		qualifier := string(cell.Qualifier)
-
-		if _, ok := resultMap[family]; !ok {
-			resultMap[family] = make(map[string][]byte)
-		}
-
-		resultMap[family][qualifier] = cell.Value
-	}
-
-	return resultMap, nil
-}
-
-// GetMovieWithAllData 获取电影的所有信息
+// GetMovieWithAllData 获取电影的所有信息（包括评分、标签等）
 func GetMovieWithAllData(ctx context.Context, movieID string) (map[string]interface{}, error) {
-	// 从HBase获取电影数据
-	data, err := GetMovie(ctx, movieID)
+	// 使用scan获取电影的所有相关数据
+	startRow := movieID + "_"
+	endRow := movieID + "`"
+
+	scan, err := hrpc.NewScanRangeStr(ctx, "movies", startRow, endRow)
 	if err != nil {
 		return nil, err
 	}
 
-	// 如果电影不存在
-	if data == nil {
-		return nil, nil
-	}
+	scanner := hbaseClient.Scan(scan)
 
-	// 解析电影数据
-	movieData := ParseMovieData(movieID, data)
-	return movieData, nil
-}
+	// 收集所有数据
+	allData := make(map[string]map[string][]byte)
 
-// GetMovieRatings 获取电影评分
-func GetMovieRatings(ctx context.Context, movieID string) (map[string]interface{}, error) {
-	// 创建scan请求，使用行键前缀匹配查找指定movieID的所有评分
-	// 由于现在使用的是复合键movieId_userId，需要使用前缀扫描
-	startRow := movieID + "_" // 起始行：movieId_
-	endRow := movieID + "`"   // 结束行：使用比"_"大的字符，确保扫描所有以movieId_开头的行
-
-	scanRequest, err := hrpc.NewScanRangeStr(ctx, "moviedata", startRow, endRow,
-		hrpc.Families(map[string][]string{"rating": nil}))
-	if err != nil {
-		return nil, err
-	}
-
-	// 获取扫描器
-	scanner := hbaseClient.Scan(scanRequest)
-
-	// 用于存储评分数据的数组
-	var ratings []float64
-	ratingsData := make([]map[string]interface{}, 0)
-
-	// 扫描所有结果
 	for {
 		result, err := scanner.Next()
 		if err != nil {
-			break // 扫描结束或发生错误
+			break
 		}
 
-		// 跳过不匹配的结果
 		if len(result.Cells) == 0 {
 			continue
 		}
 
-		// 解析复合键中的userId
-		rowID := string(result.Cells[0].Row)
-		parts := strings.Split(rowID, "_")
-		if len(parts) != 2 {
-			continue // 跳过不符合格式的行键
-		}
-
-		userId := parts[1]
-
-		// 处理每个结果
 		for _, cell := range result.Cells {
-			// 过滤出rating列
+			family := string(cell.Family)
 			qualifier := string(cell.Qualifier)
-			if string(cell.Family) == "rating" && qualifier == "rating" {
-				// 获取评分值
-				ratingValue, err := strconv.ParseFloat(string(cell.Value), 64)
-				if err == nil {
-					// 将评分添加到数组中
+
+			if _, ok := allData[family]; !ok {
+				allData[family] = make(map[string][]byte)
+			}
+
+			allData[family][qualifier] = cell.Value
+		}
+	}
+
+	if len(allData) == 0 {
+		return nil, nil
+	}
+
+	// 解析电影数据
+	movieData := ParseMovieData(movieID, allData)
+	return movieData, nil
+}
+
+// GetMovieRatings 获取电影评分（使用新的宽列格式）
+func GetMovieRatings(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	// 获取电影的ratings行
+	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_ratings")
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := hbaseClient.Get(get)
+	if err != nil {
+		return nil, err
+	}
+
+	// 如果没有找到评分数据
+	if result.Cells == nil || len(result.Cells) == 0 {
+		return map[string]interface{}{
+			"ratings":   []map[string]interface{}{},
+			"count":     0,
+			"avgRating": 0.0,
+			"minRating": 0.0,
+			"maxRating": 0.0,
+		}, nil
+	}
+
+	// 解析宽列格式的评分数据
+	var ratings []float64
+	ratingsData := make([]map[string]interface{}, 0)
+
+	for _, cell := range result.Cells {
+		if string(cell.Family) == "ratings" {
+			userID := string(cell.Qualifier)
+			// 解析评分数据格式: "{rating}:{userId}:{timestamp}"
+			ratingStr := string(cell.Value)
+			parts := strings.Split(ratingStr, ":")
+
+			if len(parts) >= 3 {
+				if ratingValue, err := strconv.ParseFloat(parts[0], 64); err == nil {
 					ratings = append(ratings, ratingValue)
 
-					// 构建评分数据，包含userId
 					ratingInfo := map[string]interface{}{
-						"userId": userId,
+						"userId": userID,
 						"rating": ratingValue,
 					}
 
-					// 添加时间戳，需要确保正确处理指针类型
-					if cell.Timestamp != nil {
-						ratingInfo["timestamp"] = int64(*cell.Timestamp)
+					// 添加时间戳
+					if timestamp, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+						ratingInfo["timestamp"] = timestamp
 					}
 
 					ratingsData = append(ratingsData, ratingInfo)
@@ -188,7 +163,6 @@ func GetMovieRatings(ctx context.Context, movieID string) (map[string]interface{
 	max = ratings[0]
 	sum = ratings[0]
 
-	// 计算统计信息
 	for i := 1; i < count; i++ {
 		rating := ratings[i]
 		sum += rating
@@ -214,54 +188,146 @@ func GetMovieRatings(ctx context.Context, movieID string) (map[string]interface{
 	}, nil
 }
 
-// GetMovieTags 获取电影标签
+// GetMovieTags 获取电影标签（使用新的宽列格式）
 func GetMovieTags(ctx context.Context, movieID string) (map[string]map[string][]byte, error) {
-	// 使用行键前缀扫描来获取指定电影的所有标签
-	startRow := movieID + "_" // 起始行: movieId_
-	endRow := movieID + "`"   // 结束行: 确保扫描所有以movieId_开头的行
-
-	scanRequest, err := hrpc.NewScanRangeStr(ctx, "moviedata", startRow, endRow,
-		hrpc.Families(map[string][]string{"tag": nil}))
+	// 获取电影的tags行
+	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_tags")
 	if err != nil {
 		return nil, err
 	}
 
-	// 获取扫描器
-	scanner := hbaseClient.Scan(scanRequest)
+	result, err := hbaseClient.Get(get)
+	if err != nil {
+		return nil, err
+	}
 
-	// 用于存储标签数据
+	// 如果没有找到标签数据
+	if result.Cells == nil || len(result.Cells) == 0 {
+		return map[string]map[string][]byte{
+			"tag": make(map[string][]byte),
+		}, nil
+	}
+
+	// 构建结果映射
 	resultMap := make(map[string]map[string][]byte)
 	resultMap["tag"] = make(map[string][]byte)
 
-	// 扫描所有结果
-	for {
-		result, err := scanner.Next()
-		if err != nil {
-			break // 扫描结束或发生错误
-		}
+	for _, cell := range result.Cells {
+		if string(cell.Family) == "tags" {
+			userID := string(cell.Qualifier)
+			// 解析标签数据格式: "{tag}:{userId}:{timestamp}"
+			tagData := string(cell.Value)
 
-		if len(result.Cells) == 0 {
-			continue
+			// 使用user_tag:userId形式作为键
+			key := "user_tag:" + userID
+			resultMap["tag"][key] = []byte(tagData)
 		}
+	}
 
-		// 处理每个结果
+	return resultMap, nil
+}
+
+// GetMovieStats 获取电影统计信息
+func GetMovieStats(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	// 获取电影的stats行
+	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_stats")
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := hbaseClient.Get(get)
+	if err != nil {
+		return nil, err
+	}
+
+	stats := make(map[string]interface{})
+
+	if result.Cells != nil {
 		for _, cell := range result.Cells {
-			if string(cell.Family) == "tag" {
+			if string(cell.Family) == "info" {
 				qualifier := string(cell.Qualifier)
-				if qualifier == "tag" {
-					// 提取用户ID
-					rowID := string(cell.Row)
-					parts := strings.Split(rowID, "_")
-					if len(parts) == 2 {
-						userId := parts[1]
-						// 使用user_tag:userId形式作为键
-						key := "user_tag:" + userId
-						resultMap["tag"][key] = cell.Value
+				value := string(cell.Value)
+
+				switch qualifier {
+				case "avg_rating":
+					if avgRating, err := strconv.ParseFloat(value, 64); err == nil {
+						stats["avgRating"] = avgRating
+					}
+				case "rating_count":
+					if count, err := strconv.Atoi(value); err == nil {
+						stats["ratingCount"] = count
+					}
+				case "updated_time":
+					if timestamp, err := strconv.ParseInt(value, 10, 64); err == nil {
+						stats["updatedTime"] = timestamp
 					}
 				}
 			}
 		}
 	}
 
-	return resultMap, nil
+	return stats, nil
+}
+
+// GetMovieLinks 获取电影外部链接
+func GetMovieLinks(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	// 获取电影的links行
+	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_links")
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := hbaseClient.Get(get)
+	if err != nil {
+		return nil, err
+	}
+
+	links := make(map[string]interface{})
+
+	if result.Cells != nil {
+		for _, cell := range result.Cells {
+			if string(cell.Family) == "info" {
+				qualifier := string(cell.Qualifier)
+				value := string(cell.Value)
+
+				switch qualifier {
+				case "imdbId":
+					links["imdbId"] = value
+				case "tmdbId":
+					links["tmdbId"] = value
+				}
+			}
+		}
+	}
+
+	return links, nil
+}
+
+// GetMovieGenome 获取电影基因分数（使用新的宽列格式）
+func GetMovieGenome(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	// 获取电影的genome行
+	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_genome")
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := hbaseClient.Get(get)
+	if err != nil {
+		return nil, err
+	}
+
+	genome := make(map[string]interface{})
+
+	if result.Cells != nil {
+		for _, cell := range result.Cells {
+			if string(cell.Family) == "genome" {
+				tagID := string(cell.Qualifier)
+				if relevance, err := strconv.ParseFloat(string(cell.Value), 64); err == nil {
+					genome[tagID] = relevance
+				}
+			}
+		}
+	}
+
+	return genome, nil
 }

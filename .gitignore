@@ -1,0 +1,105 @@
+# 编译输出文件
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+gohbase
+gohbase.exe
+DoroScore
+DoroScore.exe
+
+# Go 编译缓存
+*.test
+*.out
+/vendor/
+
+# Go 工作区文件
+go.work
+
+# 依赖下载目录
+/vendor/
+
+# 测试覆盖率文件
+*.cover
+*.coverprofile
+
+# 文档文件
+*.md
+!README.md
+HBase数据库结构文档.md
+文档/
+docs/
+documentation/
+
+# Memory Bank (项目管理文件)
+memory-bank/
+Memory-Bank/
+
+# IDE 和编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统生成的文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 日志文件
+*.log
+logs/
+log/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.temp
+
+# 配置文件中的敏感信息
+config-local.yaml
+config-production.yaml
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 备份文件
+*.bak
+*.backup
+
+# 压缩文件
+*.zip
+*.tar.gz
+*.rar
+
+# 调试文件
+debug
+debug.test
+__debug_bin
+
+# Air 热重载工具
+tmp/
+
+# 性能分析文件
+*.prof
+mem.prof
+cpu.prof
+
+# 构建目录
+build/
+dist/
+bin/ 

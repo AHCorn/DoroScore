@@ -59,3 +59,13 @@ func GetTotalMoviesCount(ctx context.Context) (int, error) {
 	Cache.Set(cacheKey, totalCount)
 	return totalCount, nil
 }
+
+// GetClient 获取HBase客户端
+func GetClient() interface{} {
+	return hbase.GetClient()
+}
+
+// GetMoviesRatingsBatch 批量获取多部电影的评分信息
+func GetMoviesRatingsBatch(ctx context.Context, movieIDs []string) (map[string]map[string]interface{}, error) {
+	return hbase.GetMoviesRatingsBatch(ctx, movieIDs)
+}

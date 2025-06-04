@@ -2,16 +2,15 @@ package hbase
 
 import (
 	"context"
-	"strconv"
 	"strings"
 
 	"github.com/tsuna/gohbase/hrpc"
 )
 
-// ScanMovies 扫描电影
+// ScanMovies 扫描电影（使用新的数据库结构）
 func ScanMovies(ctx context.Context, startRow, endRow string, limit int64) ([]*hrpc.Result, error) {
-	// 构建Scan对象
-	scanRequest, err := hrpc.NewScanRangeStr(ctx, "moviedata", startRow, endRow)
+	// 构建Scan对象，扫描movies表
+	scanRequest, err := hrpc.NewScanRangeStr(ctx, "movies", startRow, endRow)
 	if err != nil {
 		return nil, err
 	}
@@ -21,7 +20,7 @@ func ScanMovies(ctx context.Context, startRow, endRow string, limit int64) ([]*h
 	var results []*hrpc.Result
 	count := int64(0)
 
-	// 收集结果，过滤掉评分和标签数据（带下划线的行键）
+	// 收集结果，只获取_info行（电影基本信息）
 	for count < limit {
 		result, err := scanner.Next()
 		if err != nil {
@@ -36,20 +35,11 @@ func ScanMovies(ctx context.Context, startRow, endRow string, limit int64) ([]*h
 		// 获取行键
 		rowKey := string(result.Cells[0].Row)
 
-		// 跳过movieId_userId形式的复合键（评分和标签数据）
-		if strings.Contains(rowKey, "_") {
-			continue
+		// 只处理_info行（电影基本信息）
+		if strings.HasSuffix(rowKey, "_info") {
+			results = append(results, result)
+			count++
 		}
-
-		// 确保只处理电影记录（数字ID或者非复合结构）
-		_, err = strconv.Atoi(rowKey)
-		if err != nil && strings.Contains(rowKey, "_") {
-			// 如果不是数字ID且包含下划线，跳过
-			continue
-		}
-
-		results = append(results, result)
-		count++
 	}
 
 	return results, nil
@@ -64,7 +54,7 @@ func ScanMoviesWithFamilies(ctx context.Context, startRow, endRow string, famili
 	}
 
 	// 构建Scan对象，并指定列族
-	scanRequest, err := hrpc.NewScanRangeStr(ctx, "moviedata", startRow, endRow, hrpc.Families(familiesMap))
+	scanRequest, err := hrpc.NewScanRangeStr(ctx, "movies", startRow, endRow, hrpc.Families(familiesMap))
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +64,7 @@ func ScanMoviesWithFamilies(ctx context.Context, startRow, endRow string, famili
 	var results []*hrpc.Result
 	count := int64(0)
 
-	// 收集结果，过滤掉评分和标签数据
+	// 收集结果，只获取_info行
 	for count < limit {
 		result, err := scanner.Next()
 		if err != nil {
@@ -89,20 +79,11 @@ func ScanMoviesWithFamilies(ctx context.Context, startRow, endRow string, famili
 		// 获取行键
 		rowKey := string(result.Cells[0].Row)
 
-		// 跳过movieId_userId形式的复合键（评分和标签数据）
-		if strings.Contains(rowKey, "_") {
-			continue
+		// 只处理_info行（电影基本信息）
+		if strings.HasSuffix(rowKey, "_info") {
+			results = append(results, result)
+			count++
 		}
-
-		// 确保只处理电影记录（数字ID或者非复合结构）
-		_, err = strconv.Atoi(rowKey)
-		if err != nil && strings.Contains(rowKey, "_") {
-			// 如果不是数字ID且包含下划线，跳过
-			continue
-		}
-
-		results = append(results, result)
-		count++
 	}
 
 	return results, nil
@@ -110,8 +91,8 @@ func ScanMoviesWithFamilies(ctx context.Context, startRow, endRow string, famili
 
 // ScanMoviesByGenre 根据电影类型扫描电影
 func ScanMoviesByGenre(ctx context.Context, genre string, limit int64) ([]*hrpc.Result, error) {
-	// 简化为基本扫描，然后在应用层做过滤
-	scanRequest, err := hrpc.NewScanStr(ctx, "moviedata")
+	// 扫描所有_info行，然后在应用层做过滤
+	scanRequest, err := hrpc.NewScanStr(ctx, "movies")
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +102,7 @@ func ScanMoviesByGenre(ctx context.Context, genre string, limit int64) ([]*hrpc.
 	var results []*hrpc.Result
 	count := int64(0)
 
-	// 收集结果并筛选包含指定类型的电影，同时过滤掉评分和标签数据
+	// 收集结果并筛选包含指定类型的电影
 	for count < limit {
 		result, err := scanner.Next()
 		if err != nil {
@@ -136,14 +117,14 @@ func ScanMoviesByGenre(ctx context.Context, genre string, limit int64) ([]*hrpc.
 		// 获取行键
 		rowKey := string(result.Cells[0].Row)
 
-		// 跳过movieId_userId形式的复合键（评分和标签数据）
-		if strings.Contains(rowKey, "_") {
+		// 只处理_info行（电影基本信息）
+		if !strings.HasSuffix(rowKey, "_info") {
 			continue
 		}
 
 		// 检查这个结果是否包含指定的类型
 		for _, cell := range result.Cells {
-			if string(cell.Family) == "movie" && string(cell.Qualifier) == "genres" {
+			if string(cell.Family) == "info" && string(cell.Qualifier) == "genres" {
 				genreValue := string(cell.Value)
 				if strings.Contains(strings.ToLower(genreValue), strings.ToLower(genre)) {
 					results = append(results, result)
@@ -159,8 +140,8 @@ func ScanMoviesByGenre(ctx context.Context, genre string, limit int64) ([]*hrpc.
 
 // ScanMoviesByTag 根据标签扫描电影
 func ScanMoviesByTag(ctx context.Context, tag string, limit int64) ([]*hrpc.Result, error) {
-	// 简化为基本扫描，然后在应用层做过滤
-	scanRequest, err := hrpc.NewScanStr(ctx, "moviedata")
+	// 扫描所有_tags行，然后在应用层做过滤
+	scanRequest, err := hrpc.NewScanStr(ctx, "movies")
 	if err != nil {
 		return nil, err
 	}
@@ -169,8 +150,9 @@ func ScanMoviesByTag(ctx context.Context, tag string, limit int64) ([]*hrpc.Resu
 	scanner := hbaseClient.Scan(scanRequest)
 	var results []*hrpc.Result
 	count := int64(0)
+	processedMovies := make(map[string]bool) // 避免重复处理同一部电影
 
-	// 收集结果并筛选包含指定标签的电影，同时过滤掉评分和标签复合键数据
+	// 收集结果并筛选包含指定标签的电影
 	for count < limit {
 		result, err := scanner.Next()
 		if err != nil {
@@ -185,31 +167,54 @@ func ScanMoviesByTag(ctx context.Context, tag string, limit int64) ([]*hrpc.Resu
 		// 获取行键
 		rowKey := string(result.Cells[0].Row)
 
-		// 跳过movieId_userId形式的复合键（评分和标签数据）
-		if strings.Contains(rowKey, "_") {
+		// 只处理_tags行
+		if !strings.HasSuffix(rowKey, "_tags") {
 			continue
 		}
 
-		// 对于标签，我们需要从GetMovieTags函数获取，而不是直接从行记录找
-		// 由于新的数据结构，标签数据存储在movieId_userId复合键中
-		tagsResult, err := GetMovieTags(ctx, rowKey)
-		if err == nil && tagsResult != nil {
-			foundTag := false
+		// 提取电影ID
+		movieID := strings.TrimSuffix(rowKey, "_tags")
+		if processedMovies[movieID] {
+			continue
+		}
 
-			// 检查是否有匹配的标签
-			if tagMap, ok := tagsResult["tag"]; ok {
-				for _, tagData := range tagMap {
-					tagValue := string(tagData)
+		// 检查是否有匹配的标签
+		foundTag := false
+		for _, cell := range result.Cells {
+			if string(cell.Family) == "tags" {
+				// 解析标签数据格式: "{tag}:{userId}:{timestamp}"
+				tagData := string(cell.Value)
+				parts := strings.Split(tagData, ":")
+				if len(parts) >= 1 {
+					tagValue := parts[0]
 					if strings.Contains(strings.ToLower(tagValue), strings.ToLower(tag)) {
 						foundTag = true
 						break
 					}
 				}
 			}
+		}
 
-			if foundTag {
-				results = append(results, result)
+		if foundTag {
+			// 获取对应的电影基本信息
+			movieInfoResult, err := GetMovie(ctx, movieID)
+			if err == nil && movieInfoResult != nil {
+				// 构建一个包含电影基本信息的Result
+				infoResult := &hrpc.Result{}
+				for family, qualifiers := range movieInfoResult {
+					for qualifier, value := range qualifiers {
+						cell := &hrpc.Cell{
+							Row:       []byte(movieID + "_info"),
+							Family:    []byte(family),
+							Qualifier: []byte(qualifier),
+							Value:     value,
+						}
+						infoResult.Cells = append(infoResult.Cells, cell)
+					}
+				}
+				results = append(results, infoResult)
 				count++
+				processedMovies[movieID] = true
 			}
 		}
 	}
@@ -219,12 +224,8 @@ func ScanMoviesByTag(ctx context.Context, tag string, limit int64) ([]*hrpc.Resu
 
 // ScanMoviesWithPagination 带分页的电影扫描
 func ScanMoviesWithPagination(ctx context.Context, page, pageSize int) ([]*hrpc.Result, int, error) {
-	// 计算扫描范围
-	startRow := "1" // 第一行
-	totalRows := 0
-
-	// 构建扫描请求
-	scanRequest, err := hrpc.NewScanRangeStr(ctx, "moviedata", startRow, "")
+	// 构建扫描请求，只扫描_info行
+	scanRequest, err := hrpc.NewScanStr(ctx, "movies")
 	if err != nil {
 		return nil, 0, err
 	}
@@ -233,7 +234,7 @@ func ScanMoviesWithPagination(ctx context.Context, page, pageSize int) ([]*hrpc.
 	scanner := hbaseClient.Scan(scanRequest)
 	var allResults []*hrpc.Result
 
-	// 收集所有结果（注意：在实际应用中，这种方式可能不适用于大数据集）
+	// 收集所有_info行结果
 	for {
 		result, err := scanner.Next()
 		if err != nil {
@@ -248,23 +249,14 @@ func ScanMoviesWithPagination(ctx context.Context, page, pageSize int) ([]*hrpc.
 		// 获取行键
 		rowKey := string(result.Cells[0].Row)
 
-		// 跳过movieId_userId形式的复合键（评分和标签数据）
-		if strings.Contains(rowKey, "_") {
-			continue
+		// 只处理_info行（电影基本信息）
+		if strings.HasSuffix(rowKey, "_info") {
+			allResults = append(allResults, result)
 		}
-
-		// 确保只处理电影记录（数字ID或者非复合结构）
-		_, err = strconv.Atoi(rowKey)
-		if err != nil && strings.Contains(rowKey, "_") {
-			// 如果不是数字ID且包含下划线，跳过
-			continue
-		}
-
-		allResults = append(allResults, result)
 	}
 
 	// 计算总行数
-	totalRows = len(allResults)
+	totalRows := len(allResults)
 
 	// 计算分页
 	startIndex := (page - 1) * pageSize
@@ -286,8 +278,8 @@ func ScanMoviesWithPagination(ctx context.Context, page, pageSize int) ([]*hrpc.
 func SearchMovies(ctx context.Context, query string, limit int64) ([]*hrpc.Result, error) {
 	query = strings.ToLower(query)
 
-	// 使用简单扫描，然后在应用层做过滤
-	scanRequest, err := hrpc.NewScanStr(ctx, "moviedata")
+	// 扫描所有_info行，然后在应用层做过滤
+	scanRequest, err := hrpc.NewScanStr(ctx, "movies")
 	if err != nil {
 		return nil, err
 	}
@@ -312,8 +304,8 @@ func SearchMovies(ctx context.Context, query string, limit int64) ([]*hrpc.Resul
 		// 获取行键
 		rowKey := string(result.Cells[0].Row)
 
-		// 跳过movieId_userId形式的复合键（评分和标签数据）
-		if strings.Contains(rowKey, "_") {
+		// 只处理_info行（电影基本信息）
+		if !strings.HasSuffix(rowKey, "_info") {
 			continue
 		}
 
@@ -324,7 +316,7 @@ func SearchMovies(ctx context.Context, query string, limit int64) ([]*hrpc.Resul
 			qualifier := string(cell.Qualifier)
 			value := string(cell.Value)
 
-			if family == "movie" && (qualifier == "title" || qualifier == "genres") {
+			if family == "info" && (qualifier == "title" || qualifier == "genres") {
 				if strings.Contains(strings.ToLower(value), query) {
 					isMatch = true
 					break
@@ -339,4 +331,19 @@ func SearchMovies(ctx context.Context, query string, limit int64) ([]*hrpc.Resul
 	}
 
 	return results, nil
+}
+
+// GetMovieIDsFromInfoRows 从_info行中提取电影ID列表
+func GetMovieIDsFromInfoRows(results []*hrpc.Result) []string {
+	var movieIDs []string
+	for _, result := range results {
+		if len(result.Cells) > 0 {
+			rowKey := string(result.Cells[0].Row)
+			if strings.HasSuffix(rowKey, "_info") {
+				movieID := strings.TrimSuffix(rowKey, "_info")
+				movieIDs = append(movieIDs, movieID)
+			}
+		}
+	}
+	return movieIDs
 }

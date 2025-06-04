@@ -3,8 +3,6 @@ package hbase
 import (
 	"context"
 	"fmt"
-
-	"github.com/tsuna/gohbase/hrpc"
 )
 
 // GetMoviesMultiple 根据多个ID获取电影信息
@@ -38,84 +36,51 @@ func GetMoviesMultiple(ctx context.Context, movieIDs []string) (map[string]map[s
 	return results, nil
 }
 
-// GetMovieRatingStats 获取电影评分统计
+// GetMovieRatingStats 获取电影评分统计（使用新的数据库结构）
 func GetMovieRatingStats(ctx context.Context, movieID string) (map[string]float64, error) {
-	// 使用行键前缀扫描来获取指定电影的所有评分
-	startRow := movieID + "_" // 起始行: movieId_
-	endRow := movieID + "`"   // 结束行: 确保扫描所有以movieId_开头的行
+	// 先尝试从stats行获取预计算的统计信息
+	statsData, err := GetMovieStats(ctx, movieID)
+	if err == nil && len(statsData) > 0 {
+		result := make(map[string]float64)
 
-	scanRequest, err := hrpc.NewScanRangeStr(ctx, "moviedata", startRow, endRow,
-		hrpc.Families(map[string][]string{"rating": {"rating"}}))
+		if avgRating, ok := statsData["avgRating"].(float64); ok {
+			result["avgRating"] = avgRating
+		}
+		if ratingCount, ok := statsData["ratingCount"].(int); ok {
+			result["count"] = float64(ratingCount)
+		}
+
+		// 如果有预计算的统计信息，直接返回
+		if len(result) > 0 {
+			// 设置默认的min和max值
+			result["minRating"] = 0.5 // MovieLens最小评分
+			result["maxRating"] = 5.0 // MovieLens最大评分
+			return result, nil
+		}
+	}
+
+	// 如果没有预计算的统计信息，从ratings行实时计算
+	ratingsData, err := GetMovieRatings(ctx, movieID)
 	if err != nil {
 		return nil, err
 	}
 
-	// 获取扫描器
-	scanner := hbaseClient.Scan(scanRequest)
+	result := make(map[string]float64)
 
-	// 统计变量
-	var count, sum, min, max float64
-	count = 0
-	min = 5 // 初始化为最高分
-	max = 0
-
-	// 扫描所有结果
-	for {
-		result, err := scanner.Next()
-		if err != nil {
-			break // 扫描结束或发生错误
-		}
-
-		if len(result.Cells) == 0 {
-			continue
-		}
-
-		// 处理每个结果
-		for _, cell := range result.Cells {
-			if string(cell.Family) == "rating" && string(cell.Qualifier) == "rating" {
-				rating := parseFloat(string(cell.Value), 0)
-				if rating > 0 {
-					sum += rating
-					count++
-
-					if rating < min {
-						min = rating
-					}
-					if rating > max {
-						max = rating
-					}
-				}
-			}
-		}
+	if avgRating, ok := ratingsData["avgRating"].(float64); ok {
+		result["avgRating"] = avgRating
+	}
+	if minRating, ok := ratingsData["minRating"].(float64); ok {
+		result["minRating"] = minRating
+	}
+	if maxRating, ok := ratingsData["maxRating"].(float64); ok {
+		result["maxRating"] = maxRating
+	}
+	if count, ok := ratingsData["count"].(int); ok {
+		result["count"] = float64(count)
 	}
 
-	// 计算平均分
-	avgRating := 0.0
-	if count > 0 {
-		avgRating = sum / count
-	}
-
-	// 如果没有评分，设置最小最大值为0
-	if count == 0 {
-		min = 0
-	}
-
-	return map[string]float64{
-		"avgRating": avgRating,
-		"minRating": min,
-		"maxRating": max,
-		"count":     count,
-	}, nil
-}
-
-// 解析浮点数，出错时返回默认值
-func parseFloat(s string, defaultValue float64) float64 {
-	var v float64
-	_, err := fmt.Sscanf(s, "%f", &v)
-	if err != nil {
-		return defaultValue
-	}
-	return v
+	return result, nil
 }
 
 // GetMoviesRatingsBatch 批量获取多部电影的评分信息
@@ -133,6 +98,22 @@ func GetMoviesRatingsBatch(ctx context.Context, movieIDs []string) (map[string]m
 
 	for _, id := range movieIDs {
 		go func(movieID string) {
+			// 先尝试从stats获取预计算的评分
+			statsData, err := GetMovieStats(ctx, movieID)
+			if err == nil && len(statsData) > 0 {
+				if avgRating, ok := statsData["avgRating"].(float64); ok {
+					data := map[string]interface{}{
+						"avgRating": avgRating,
+					}
+					if ratingCount, ok := statsData["ratingCount"].(int); ok {
+						data["count"] = ratingCount
+					}
+					resultChan <- result{id: movieID, data: data, err: nil}
+					return
+				}
+			}
+
+			// 如果没有预计算的统计信息，从ratings行获取
 			data, err := GetMovieRatings(ctx, movieID)
 			resultChan <- result{id: movieID, data: data, err: err}
 		}(id)
@@ -153,4 +134,45 @@ func GetMoviesRatingsBatch(ctx context.Context, movieIDs []string) (map[string]m
 	}
 
 	return results, nil
+}
+
+// GetMoviesWithAllDataBatch 批量获取多部电影的完整信息
+func GetMoviesWithAllDataBatch(ctx context.Context, movieIDs []string) (map[string]map[string]interface{}, error) {
+	results := make(map[string]map[string]interface{})
+
+	// 使用goroutine并发获取多部电影的完整信息
+	type result struct {
+		id   string
+		data map[string]interface{}
+		err  error
+	}
+
+	resultChan := make(chan result, len(movieIDs))
+
+	for _, id := range movieIDs {
+		go func(movieID string) {
+			data, err := GetMovieWithAllData(ctx, movieID)
+			resultChan <- result{id: movieID, data: data, err: err}
+		}(id)
+	}
+
+	// 收集结果
+	for range movieIDs {
+		res := <-resultChan
+		if res.err == nil && res.data != nil {
+			results[res.id] = res.data
+		}
+	}
+
+	return results, nil
+}
+
+// 解析浮点数，出错时返回默认值
+func parseFloat(s string, defaultValue float64) float64 {
+	var v float64
+	_, err := fmt.Sscanf(s, "%f", &v)
+	if err != nil {
+		return defaultValue
+	}
+	return v
 }

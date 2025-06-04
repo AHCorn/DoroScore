@@ -28,44 +28,45 @@ func GetTotalMoviesCount(ctx context.Context) (int, error) {
 	return totalCount, nil
 }
 
-// GetMoviesList 获取电影列表
+// GetMoviesList 获取电影列表（适配新的数据库结构）
 func GetMoviesList(page, perPage int) (*MovieList, error) {
 	ctx := context.Background()
 
 	// 获取总电影数
 	totalMovies, err := GetTotalMoviesCount(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("获取电影总数失败: %w", err) // 如果获取失败，返回错误而不是使用默认值
+		return nil, fmt.Errorf("获取电影总数失败: %w", err)
 	}
 
-	// 计算分页参数
-	startIdx := (page-1)*perPage + 1 // 从1开始
-	endIdx := startIdx + perPage
-
-	// 扫描电影范围
-	startRow := fmt.Sprintf("%d", startIdx)
-	endRow := fmt.Sprintf("%d", endIdx)
-
-	// 直接使用 ScanMovies 而非先获取客户端再扫描
-	results, err := utils.ScanMovies(ctx, startRow, endRow, int64(perPage))
+	// 使用分页扫描获取电影列表
+	results, actualTotal, err := utils.ScanMoviesWithPagination(ctx, page, perPage)
 	if err != nil {
 		return nil, err
+	}
+
+	// 更新总数（如果实际扫描得到的总数不同）
+	if actualTotal != totalMovies {
+		totalMovies = actualTotal
+		utils.Cache.Set("total_movies_count", totalMovies)
 	}
 
 	// 解析电影列表
 	movies := []Movie{}
 
 	for _, result := range results {
-		// 获取行键（即movieId）
-		var movieID string
-		for _, cell := range result.Cells {
-			movieID = string(cell.Row)
-			break
-		}
-
-		if movieID == "" {
+		// 获取行键
+		if len(result.Cells) == 0 {
 			continue
 		}
+
+		rowKey := string(result.Cells[0].Row)
+
+		// 确保是_info行，提取电影ID
+		if !strings.HasSuffix(rowKey, "_info") {
+			continue
+		}
+
+		movieID := strings.TrimSuffix(rowKey, "_info")
 
 		// 手动构建结果映射
 		resultMap := make(map[string]map[string][]byte)

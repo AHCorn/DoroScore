@@ -22,8 +22,8 @@ func InitHBase(conf *config.HBaseConfig) error {
 
 	// 测试连接是否成功
 	ctx := context.Background()
-	// 尝试获取一条记录来测试连接
-	get, err := hrpc.NewGetStr(ctx, "moviedata", "1")
+	// 尝试获取一条记录来测试连接，使用新的表名和行键格式
+	get, err := hrpc.NewGetStr(ctx, "movies", "1_info")
 	if err != nil {
 		logrus.Errorf("创建Get请求失败: %v", err)
 		return err

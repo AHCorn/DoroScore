@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// GetRandomMovies 获取随机电影（带缓存）
+// GetRandomMovies 获取随机电影（带缓存）- 适配新的数据库结构
 func GetRandomMovies(count int) ([]Movie, error) {
 	ctx := context.Background()
 
@@ -19,8 +19,7 @@ func GetRandomMovies(count int) ([]Movie, error) {
 		return nil, fmt.Errorf("获取电影总数失败: %w", err)
 	}
 
-	// 构建缓存键 - 这里我们不直接缓存结果，而是缓存seed，确保一段时间内返回相同的"随机"电影
-	// 使用当前时间的小时数作为缓存键，这样每小时刷新一次随机结果
+	// 构建缓存键 - 使用当前时间的小时数作为缓存键，这样每小时刷新一次随机结果
 	currentHour := time.Now().Hour()
 	cacheKey := fmt.Sprintf("random_movies:%d:%d", count, currentHour)
 
@@ -36,6 +35,8 @@ func GetRandomMovies(count int) ([]Movie, error) {
 	// 获取每个随机ID的电影信息
 	for _, id := range randomIDs {
 		movieID := fmt.Sprintf("%d", id)
+
+		// 使用新的数据库结构获取电影信息
 		data, err := utils.GetMovie(ctx, movieID)
 		if err != nil {
 			continue
