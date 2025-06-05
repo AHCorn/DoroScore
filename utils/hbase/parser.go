@@ -181,3 +181,59 @@ func GetMovieLinksWithUrls(ctx context.Context, movieID string) (map[string]inte
 
 	return links, nil
 }
+
+// GetMovieTagsWithDetails 获取电影标签并返回详细信息（通用函数）
+func GetMovieTagsWithDetails(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	// 获取电影的tags行
+	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_tags")
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := hbaseClient.Get(get)
+	if err != nil {
+		return nil, err
+	}
+
+	tags := make(map[string]interface{})
+	var uniqueTags []string
+	var taggedUsers []map[string]string
+	tagSet := make(map[string]bool)
+
+	if result.Cells != nil {
+		for _, cell := range result.Cells {
+			if string(cell.Family) == "info" {
+				userID := string(cell.Qualifier)
+				// 解析标签数据格式: "{tag}:{userId}:{timestamp}"
+				tagStr := string(cell.Value)
+				parts := strings.Split(tagStr, ":")
+
+				if len(parts) >= 3 {
+					tag := parts[0]
+					timestamp := parts[2]
+
+					// 添加到唯一标签列表
+					if !tagSet[tag] {
+						uniqueTags = append(uniqueTags, tag)
+						tagSet[tag] = true
+					}
+
+					// 添加到标签用户列表
+					taggedUsers = append(taggedUsers, map[string]string{
+						"userId":    userID,
+						"tag":       tag,
+						"timestamp": timestamp,
+					})
+				}
+			}
+		}
+	}
+
+	// 构建返回结果
+	tags["uniqueTags"] = uniqueTags
+	tags["taggedUsers"] = taggedUsers
+	tags["tagCount"] = len(uniqueTags)
+	tags["userTagCount"] = len(taggedUsers)
+
+	return tags, nil
+}

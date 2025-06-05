@@ -188,43 +188,9 @@ func GetMovieRatings(ctx context.Context, movieID string) (map[string]interface{
 	}, nil
 }
 
-// GetMovieTags 获取电影标签（使用新的宽列格式）
-func GetMovieTags(ctx context.Context, movieID string) (map[string]map[string][]byte, error) {
-	// 获取电影的tags行
-	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_tags")
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := hbaseClient.Get(get)
-	if err != nil {
-		return nil, err
-	}
-
-	// 如果没有找到标签数据
-	if result.Cells == nil || len(result.Cells) == 0 {
-		return map[string]map[string][]byte{
-			"tag": make(map[string][]byte),
-		}, nil
-	}
-
-	// 构建结果映射
-	resultMap := make(map[string]map[string][]byte)
-	resultMap["tag"] = make(map[string][]byte)
-
-	for _, cell := range result.Cells {
-		if string(cell.Family) == "tags" {
-			userID := string(cell.Qualifier)
-			// 解析标签数据格式: "{tag}:{userId}:{timestamp}"
-			tagData := string(cell.Value)
-
-			// 使用user_tag:userId形式作为键
-			key := "user_tag:" + userID
-			resultMap["tag"][key] = []byte(tagData)
-		}
-	}
-
-	return resultMap, nil
+// GetMovieTags 获取电影标签（使用通用函数）
+func GetMovieTags(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	return GetMovieTagsWithDetails(ctx, movieID)
 }
 
 // GetMovieStats 获取电影统计信息

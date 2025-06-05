@@ -323,12 +323,15 @@ func buildMovieFromParsedData(movieID string, movieData map[string]interface{}) 
 		movie.AvgRating = avgRating
 	}
 
-	if tags, ok := movieData["uniqueTags"].([]string); ok {
-		movie.Tags = tags
+	// 添加标签数据（使用通用函数）
+	ctx := context.Background()
+	if tagsData, err := utils.GetMovieTags(ctx, movieID); err == nil {
+		if uniqueTags, ok := tagsData["uniqueTags"].([]string); ok {
+			movie.Tags = uniqueTags
+		}
 	}
 
 	// 添加链接数据（使用通用函数）
-	ctx := context.Background()
 	if linksData, err := utils.GetMovieLinks(ctx, movieID); err == nil {
 		linkObj := Links{}
 
@@ -401,12 +404,15 @@ func buildMovieFromData(movieID string, parsedData map[string]interface{}, allDa
 		movie.AvgRating = avgRating
 	}
 
-	if tags, ok := parsedData["uniqueTags"].([]string); ok {
-		movie.Tags = tags
+	// 添加标签数据（使用通用函数）
+	ctx := context.Background()
+	if tagsData, err := utils.GetMovieTags(ctx, movieID); err == nil {
+		if uniqueTags, ok := tagsData["uniqueTags"].([]string); ok {
+			movie.Tags = uniqueTags
+		}
 	}
 
 	// 添加链接数据（使用通用函数）
-	ctx := context.Background()
 	if linksData, err := utils.GetMovieLinks(ctx, movieID); err == nil {
 		linkObj := Links{}
 

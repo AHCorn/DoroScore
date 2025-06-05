@@ -74,3 +74,8 @@ func GetMoviesRatingsBatch(ctx context.Context, movieIDs []string) (map[string]m
 func GetMovieLinks(ctx context.Context, movieID string) (map[string]interface{}, error) {
 	return hbase.GetMovieLinksWithUrls(ctx, movieID)
 }
+
+// GetMovieTags 获取电影标签（通用函数）
+func GetMovieTags(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	return hbase.GetMovieTagsWithDetails(ctx, movieID)
+}

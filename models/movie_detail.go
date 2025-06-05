@@ -87,9 +87,18 @@ func GetMovieByID(movieID string) (*MovieDetail, error) {
 		movie.Links = linkObj
 	}
 
-	// 设置标签
-	if uniqueTags, ok := movieData["uniqueTags"].([]string); ok {
-		movie.Tags = uniqueTags
+	// 设置标签（使用通用函数）
+	var tagCount int
+	if tagsData, err := utils.GetMovieTags(ctx, movieID); err == nil {
+		if uniqueTags, ok := tagsData["uniqueTags"].([]string); ok {
+			movie.Tags = uniqueTags
+		}
+		if taggedUsers, ok := tagsData["taggedUsers"].([]map[string]string); ok {
+			detail.TaggedUsers = taggedUsers
+		}
+		if count, ok := tagsData["tagCount"].(int); ok {
+			tagCount = count
+		}
 	}
 
 	detail.Movie = movie
@@ -105,7 +114,7 @@ func GetMovieByID(movieID string) (*MovieDetail, error) {
 	// 构建统计数据
 	detail.Stats = map[string]float64{
 		"ratingCount": float64(ratingCount),
-		"tagCount":    float64(len(movie.Tags)),
+		"tagCount":    float64(tagCount),
 	}
 
 	// 将结果存入缓存

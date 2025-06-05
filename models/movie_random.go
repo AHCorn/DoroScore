@@ -105,9 +105,11 @@ func GetRandomMovies(count int) ([]Movie, error) {
 			}
 		}
 
-		// 添加标签
-		if tags, ok := movieData["uniqueTags"].([]string); ok {
-			movie.Tags = tags
+		// 添加标签（使用通用函数）
+		if tagsData, err := utils.GetMovieTags(ctx, movieID); err == nil {
+			if uniqueTags, ok := tagsData["uniqueTags"].([]string); ok {
+				movie.Tags = uniqueTags
+			}
 		}
 
 		// 添加链接数据（使用通用函数）

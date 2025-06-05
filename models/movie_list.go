@@ -158,9 +158,11 @@ func GetMoviesList(page, perPage int) (*MovieList, error) {
 			movie.Links = linkObj
 		}
 
-		// 添加标签数据
-		if uniqueTags, ok := movieData["uniqueTags"].([]string); ok {
-			movie.Tags = uniqueTags
+		// 添加标签数据（使用通用函数）
+		if tagsData, err := utils.GetMovieTags(ctx, movieID); err == nil {
+			if uniqueTags, ok := tagsData["uniqueTags"].([]string); ok {
+				movie.Tags = uniqueTags
+			}
 		}
 
 		movies = append(movies, movie)
