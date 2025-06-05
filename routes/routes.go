@@ -13,6 +13,12 @@ func SetupRouter() *gin.Engine {
 	// 创建默认路由
 	router := gin.Default()
 
+	// 静态文件服务
+	router.Static("/static", "./static")
+	router.GET("/test-dashboard", func(c *gin.Context) {
+		c.File("./static/test-dashboard.html")
+	})
+
 	// 添加CORS中间件
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
@@ -29,6 +35,7 @@ func SetupRouter() *gin.Engine {
 	// 创建控制器实例
 	movieController := controllers.NewMovieController()
 	systemController := controllers.NewSystemController()
+	testController := controllers.NewTestController()
 
 	// 电影相关路由
 	movies := api.Group("/movies")
@@ -53,6 +60,20 @@ func SetupRouter() *gin.Engine {
 		system.GET("/cache", systemController.GetCacheStats)
 		system.POST("/search-index/build", systemController.BuildSearchIndex)
 		system.GET("/search-index/stats", systemController.GetSearchIndexStats)
+	}
+
+	// 测试相关路由
+	test := api.Group("/test")
+	{
+		// 随机写入控制
+		test.POST("/ratings/start", testController.StartRandomRatings)
+		test.POST("/ratings/stop", testController.StopRandomRatings)
+		test.GET("/ratings/status", testController.GetRandomRatingsStatus)
+		test.GET("/ratings/logs", testController.GetRandomRatingsLogs)
+
+		// 单次操作
+		test.POST("/ratings/movie/:id", testController.GenerateRandomRatingsForMovie)
+		test.DELETE("/ratings/movie/:id", testController.ClearMovieRatings)
 	}
 
 	return router
