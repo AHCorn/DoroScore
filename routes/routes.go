@@ -18,6 +18,9 @@ func SetupRouter() *gin.Engine {
 	router.GET("/test-dashboard", func(c *gin.Context) {
 		c.File("./static/test-dashboard.html")
 	})
+	router.GET("/hotness-dashboard", func(c *gin.Context) {
+		c.File("./static/hotness-dashboard.html")
+	})
 
 	// 添加CORS中间件
 	router.Use(cors.New(cors.Config{
@@ -36,6 +39,7 @@ func SetupRouter() *gin.Engine {
 	movieController := controllers.NewMovieController()
 	systemController := controllers.NewSystemController()
 	testController := controllers.NewTestController()
+	hotnessController := controllers.NewHotnessController()
 
 	// 电影相关路由
 	movies := api.Group("/movies")
@@ -74,6 +78,17 @@ func SetupRouter() *gin.Engine {
 		// 单次操作
 		test.POST("/ratings/movie/:id", testController.GenerateRandomRatingsForMovie)
 		test.DELETE("/ratings/movie/:id", testController.ClearMovieRatings)
+	}
+
+	// 热度相关路由
+	hotness := api.Group("/hotness")
+	{
+		hotness.GET("/movies", hotnessController.GetHotMovies)
+		hotness.GET("/movie/:id", hotnessController.GetMovieHotness)
+		hotness.GET("/stats", hotnessController.GetWriteStats)
+		hotness.GET("/writes", hotnessController.GetRecentWrites)
+		hotness.GET("/ranking", hotnessController.GetHotnessRanking)
+		hotness.GET("/trends", hotnessController.GetHotnessTrends)
 	}
 
 	return router

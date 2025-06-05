@@ -104,3 +104,4 @@ build/
 dist/
 bin/ 
 config.yaml
+/static

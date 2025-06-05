@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"gohbase/services"
 	"gohbase/utils"
 
 	"github.com/gin-gonic/gin"
@@ -232,31 +233,9 @@ func (tc *TestController) performRandomWrite(ctx context.Context, client interfa
 
 	// 生成随机评分 (0.5-5.0, 步长0.5)
 	ratingFloat := (float64(rand.Intn(10)) + 1) * 0.5
-	ratingStr := fmt.Sprintf("%.1f", ratingFloat)
 
-	// 生成当前时间戳
-	timestamp := time.Now().Unix()
-
-	// 构建评分数据值: "{rating}:{userId}:{timestamp}"
-	ratingValue := fmt.Sprintf("%s:%s:%d", ratingStr, userIDStr, timestamp)
-
-	// 构建行键: "{movieId}_ratings"
-	rowKey := fmt.Sprintf("%s_ratings", movieIDStr)
-
-	// 创建Put请求
-	putRequest, err := hrpc.NewPutStr(ctx, "movies", rowKey, map[string]map[string][]byte{
-		"ratings": {
-			userIDStr: []byte(ratingValue),
-		},
-	})
-
-	if err != nil {
-		tc.addLog(fmt.Sprintf("❌ 创建Put请求失败 (电影%s, 用户%s): %v", movieIDStr, userIDStr, err))
-		return
-	}
-
-	// 执行Put操作
-	_, err = client.Put(putRequest)
+	// 使用通用评分写入函数
+	err := services.GlobalRatingTracker.WriteRatingToHBase(ctx, movieIDStr, userIDStr, ratingFloat, "test")
 	if err != nil {
 		tc.addLog(fmt.Sprintf("❌ 写入失败 (电影%s, 用户%s): %v", movieIDStr, userIDStr, err))
 		return
@@ -270,8 +249,8 @@ func (tc *TestController) performRandomWrite(ctx context.Context, client interfa
 
 	// 每10次写入记录一次日志
 	if tc.totalInserted%10 == 0 {
-		tc.addLog(fmt.Sprintf("✅ 已写入 %d 条评分数据，最新: 电影%s 用户%s 评分%s",
-			tc.totalInserted, movieIDStr, userIDStr, ratingStr))
+		tc.addLog(fmt.Sprintf("✅ 已写入 %d 条评分数据，最新: 电影%s 用户%s 评分%.1f",
+			tc.totalInserted, movieIDStr, userIDStr, ratingFloat))
 	}
 }
 
@@ -300,11 +279,6 @@ func (tc *TestController) GenerateRandomRatingsForMovie(c *gin.Context) {
 
 	ctx := context.Background()
 
-	// 获取HBase客户端
-	client := utils.GetClient().(interface {
-		Put(request *hrpc.Mutate) (*hrpc.Result, error)
-	})
-
 	// 获取要生成的评分数量，默认10个
 	countStr := c.DefaultQuery("count", "10")
 	count, err := strconv.Atoi(countStr)
@@ -326,34 +300,9 @@ func (tc *TestController) GenerateRandomRatingsForMovie(c *gin.Context) {
 
 		// 生成随机评分 (0.5-5.0, 步长0.5)
 		ratingFloat := (float64(rand.Intn(10)) + 1) * 0.5
-		ratingStr := fmt.Sprintf("%.1f", ratingFloat)
 
-		// 生成随机时间戳 (过去一年内)
-		now := time.Now()
-		randomDays := rand.Intn(365)
-		randomTime := now.AddDate(0, 0, -randomDays)
-		timestamp := randomTime.Unix()
-
-		// 构建评分数据值: "{rating}:{userId}:{timestamp}"
-		ratingValue := fmt.Sprintf("%s:%s:%d", ratingStr, userIDStr, timestamp)
-
-		// 构建行键: "{movieId}_ratings"
-		rowKey := fmt.Sprintf("%s_ratings", movieID)
-
-		// 创建Put请求
-		putRequest, err := hrpc.NewPutStr(ctx, "movies", rowKey, map[string]map[string][]byte{
-			"ratings": {
-				userIDStr: []byte(ratingValue),
-			},
-		})
-
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("创建Put请求失败 (用户%s): %v", userIDStr, err))
-			continue
-		}
-
-		// 执行Put操作
-		_, err = client.Put(putRequest)
+		// 使用通用评分写入函数
+		err := services.GlobalRatingTracker.WriteRatingToHBase(ctx, movieID, userIDStr, ratingFloat, "api")
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("写入失败 (用户%s): %v", userIDStr, err))
 			continue
