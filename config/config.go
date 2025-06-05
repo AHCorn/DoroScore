@@ -22,11 +22,32 @@ type ServerConfig struct {
 
 // HBaseConfig HBase数据库配置
 type HBaseConfig struct {
-	Host       string `yaml:"host"`
-	ZkQuorum   string `yaml:"zk_quorum"`
-	ZkPort     string `yaml:"zk_port"`
-	MasterPort string `yaml:"master_port"`
-	ThriftPort string `yaml:"thrift_port"`
+	Host        string                 `yaml:"host"`
+	ZkQuorum    string                 `yaml:"zk_quorum"`
+	ZkPort      string                 `yaml:"zk_port"`
+	MasterPort  string                 `yaml:"master_port"`
+	ThriftPort  string                 `yaml:"thrift_port"`
+	Performance HBasePerformanceConfig `yaml:"performance"`
+	RandomTest  HBaseRandomTestConfig  `yaml:"random_test"`
+}
+
+// HBasePerformanceConfig HBase性能配置
+type HBasePerformanceConfig struct {
+	ConnectionPoolSize int    `yaml:"connection_pool_size"`
+	BatchSize          int    `yaml:"batch_size"`
+	WriteTimeout       string `yaml:"write_timeout"`
+	ReadTimeout        string `yaml:"read_timeout"`
+	MaxRetries         int    `yaml:"max_retries"`
+	RetryDelay         string `yaml:"retry_delay"`
+}
+
+// HBaseRandomTestConfig HBase随机测试配置
+type HBaseRandomTestConfig struct {
+	WriteInterval     string `yaml:"write_interval"`
+	FlushInterval     string `yaml:"flush_interval"`
+	MaxDuration       string `yaml:"max_duration"`
+	BatchSize         int    `yaml:"batch_size"`
+	ConcurrentWriters int    `yaml:"concurrent_writers"`
 }
 
 // CacheConfig 缓存配置
@@ -106,6 +127,21 @@ func getDefaultConfig() *Config {
 			ZkPort:     "2181",
 			MasterPort: "16000",
 			ThriftPort: "9090",
+			Performance: HBasePerformanceConfig{
+				ConnectionPoolSize: 5,
+				BatchSize:          50,
+				WriteTimeout:       "30s",
+				ReadTimeout:        "10s",
+				MaxRetries:         3,
+				RetryDelay:         "100ms",
+			},
+			RandomTest: HBaseRandomTestConfig{
+				WriteInterval:     "500ms",
+				FlushInterval:     "2s",
+				MaxDuration:       "5m",
+				BatchSize:         50,
+				ConcurrentWriters: 3,
+			},
 		},
 		Cache: CacheConfig{
 			CleanupInterval:   "5m",

@@ -64,6 +64,11 @@ func SetupRouter() *gin.Engine {
 		system.GET("/cache", systemController.GetCacheStats)
 		system.POST("/search-index/build", systemController.BuildSearchIndex)
 		system.GET("/search-index/stats", systemController.GetSearchIndexStats)
+
+		// 性能监控和诊断
+		system.GET("/performance", systemController.GetHBasePerformanceStats)
+		system.GET("/diagnostics", systemController.GetHBaseDiagnostics)
+		system.POST("/gc", systemController.ForceGC)
 	}
 
 	// 测试相关路由

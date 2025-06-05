@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gohbase/services"
@@ -15,96 +16,144 @@ import (
 	"github.com/tsuna/gohbase/hrpc"
 )
 
-// TestController 测试控制器
+// TestController 测试控制器 - 优化版本
 type TestController struct {
-	isRunning     bool
+	isRunning     int32 // 使用原子操作
 	stopChan      chan bool
 	mu            sync.RWMutex
 	logs          []string
-	movieStats    map[string]int
-	totalInserted int
+	movieStats    map[string]int64 // 使用int64支持原子操作
+	totalInserted int64            // 使用原子操作
 	startTime     time.Time
+
+	// 新增：批量写入相关
+	batchSize   int
+	batchBuffer []BatchWriteItem
+	batchMu     sync.Mutex
+	lastFlush   time.Time
+
+	// 新增：性能监控
+	writeLatency []time.Duration
+	errorCount   int64
+
+	// 新增：详细写入记录
+	recentWrites []WriteRecord
+	writesMu     sync.RWMutex
+}
+
+// BatchWriteItem 批量写入项
+type BatchWriteItem struct {
+	MovieID string
+	UserID  string
+	Rating  float64
+	Source  string
+}
+
+// WriteRecord 写入记录
+type WriteRecord struct {
+	MovieID   string    `json:"movieId"`
+	UserID    string    `json:"userId"`
+	Rating    float64   `json:"rating"`
+	Source    string    `json:"source"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // NewTestController 创建测试控制器
 func NewTestController() *TestController {
 	return &TestController{
-		isRunning:  false,
-		stopChan:   make(chan bool),
-		logs:       make([]string, 0),
-		movieStats: make(map[string]int),
+		isRunning:    0,
+		stopChan:     make(chan bool),
+		logs:         make([]string, 0, 1000), // 预分配容量
+		movieStats:   make(map[string]int64),
+		batchSize:    50, // 批量大小
+		batchBuffer:  make([]BatchWriteItem, 0, 50),
+		writeLatency: make([]time.Duration, 0, 100),
+		recentWrites: make([]WriteRecord, 0, 500), // 保存最近500条写入记录
 	}
 }
 
-// StartRandomRatings 开始随机写入评分数据
+// StartRandomRatings 开始随机写入评分数据 - 优化版本
 func (tc *TestController) StartRandomRatings(c *gin.Context) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	if tc.isRunning {
+	if !atomic.CompareAndSwapInt32(&tc.isRunning, 0, 1) {
 		utils.BadRequest(c, "随机写入已在运行中")
 		return
 	}
 
 	// 重置状态
-	tc.isRunning = true
+	tc.mu.Lock()
 	tc.stopChan = make(chan bool)
-	tc.logs = make([]string, 0)
-	tc.movieStats = make(map[string]int)
-	tc.totalInserted = 0
+	tc.logs = tc.logs[:0] // 重用切片，避免重新分配
+	tc.movieStats = make(map[string]int64)
+	atomic.StoreInt64(&tc.totalInserted, 0)
+	atomic.StoreInt64(&tc.errorCount, 0)
 	tc.startTime = time.Now()
+	tc.lastFlush = time.Now()
+	tc.batchBuffer = tc.batchBuffer[:0]
+	tc.writeLatency = tc.writeLatency[:0]
+	tc.mu.Unlock()
 
 	// 启动后台写入任务
-	go tc.runRandomRatingsTask()
+	go tc.runOptimizedRandomRatingsTask()
 
-	tc.addLog("🚀 随机评分写入任务已启动")
+	tc.addLog("🚀 优化版随机评分写入任务已启动 (批量模式)")
 
 	utils.SuccessData(c, gin.H{
 		"status":      "success",
-		"message":     "随机评分写入任务已启动",
+		"message":     "优化版随机评分写入任务已启动",
 		"startTime":   tc.startTime.Format("2006-01-02 15:04:05"),
 		"maxDuration": "5分钟",
+		"batchSize":   tc.batchSize,
+		"mode":        "optimized_batch",
 	})
 }
 
 // StopRandomRatings 停止随机写入评分数据
 func (tc *TestController) StopRandomRatings(c *gin.Context) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	if !tc.isRunning {
+	if !atomic.CompareAndSwapInt32(&tc.isRunning, 1, 0) {
 		utils.BadRequest(c, "随机写入未在运行")
 		return
 	}
 
 	// 停止任务
-	tc.isRunning = false
 	close(tc.stopChan)
 
+	// 刷新剩余的批量数据
+	tc.flushBatch()
+
 	duration := time.Since(tc.startTime)
-	tc.addLog(fmt.Sprintf("⏹️ 随机评分写入任务已停止，运行时长: %v", duration))
+	totalInserted := atomic.LoadInt64(&tc.totalInserted)
+	errorCount := atomic.LoadInt64(&tc.errorCount)
+
+	tc.addLog(fmt.Sprintf("⏹️ 随机评分写入任务已停止，运行时长: %v, 成功: %d, 错误: %d",
+		duration, totalInserted, errorCount))
 
 	utils.SuccessData(c, gin.H{
 		"status":        "success",
 		"message":       "随机评分写入任务已停止",
 		"duration":      duration.String(),
-		"totalInserted": tc.totalInserted,
+		"totalInserted": totalInserted,
+		"errorCount":    errorCount,
+		"successRate":   fmt.Sprintf("%.2f%%", float64(totalInserted)/float64(totalInserted+errorCount)*100),
 	})
 }
 
-// GetRandomRatingsStatus 获取随机写入状态
+// GetRandomRatingsStatus 获取随机写入状态 - 优化版本
 func (tc *TestController) GetRandomRatingsStatus(c *gin.Context) {
 	tc.mu.RLock()
-	defer tc.mu.RUnlock()
+	tc.writesMu.RLock()
+
+	isRunning := atomic.LoadInt32(&tc.isRunning) == 1
+	totalInserted := atomic.LoadInt64(&tc.totalInserted)
+	errorCount := atomic.LoadInt64(&tc.errorCount)
 
 	var duration time.Duration
-	if tc.isRunning {
+	if isRunning {
 		duration = time.Since(tc.startTime)
 	}
 
 	// 找出写入最多的电影
 	var topMovie string
-	var maxCount int
+	var maxCount int64
 	for movieID, count := range tc.movieStats {
 		if count > maxCount {
 			maxCount = count
@@ -112,24 +161,49 @@ func (tc *TestController) GetRandomRatingsStatus(c *gin.Context) {
 		}
 	}
 
+	// 计算平均延迟
+	var avgLatency time.Duration
+	if len(tc.writeLatency) > 0 {
+		var total time.Duration
+		for _, lat := range tc.writeLatency {
+			total += lat
+		}
+		avgLatency = total / time.Duration(len(tc.writeLatency))
+	}
+
+	// 计算评分统计
+	ratingStats := tc.calculateRatingStats()
+
+	tc.writesMu.RUnlock()
+	tc.mu.RUnlock()
+
 	utils.SuccessData(c, gin.H{
 		"status":        "success",
-		"isRunning":     tc.isRunning,
+		"isRunning":     isRunning,
 		"startTime":     tc.startTime.Format("2006-01-02 15:04:05"),
 		"duration":      duration.String(),
-		"totalInserted": tc.totalInserted,
+		"totalInserted": totalInserted,
+		"errorCount":    errorCount,
+		"successRate":   fmt.Sprintf("%.2f%%", float64(totalInserted)/float64(totalInserted+errorCount)*100),
+		"avgLatency":    avgLatency.String(),
 		"topMovie": gin.H{
 			"movieId": topMovie,
 			"count":   maxCount,
 		},
-		"movieCount": len(tc.movieStats),
+		"movieCount":   len(tc.movieStats),
+		"batchSize":    tc.batchSize,
+		"mode":         "optimized_batch",
+		"ratingStats":  ratingStats,
+		"writeRecords": len(tc.recentWrites),
 	})
 }
 
 // GetRandomRatingsLogs 获取随机写入日志
 func (tc *TestController) GetRandomRatingsLogs(c *gin.Context) {
 	tc.mu.RLock()
+	tc.writesMu.RLock()
 	defer tc.mu.RUnlock()
+	defer tc.writesMu.RUnlock()
 
 	// 获取最近的日志条数，默认50条
 	limitStr := c.DefaultQuery("limit", "50")
@@ -147,6 +221,12 @@ func (tc *TestController) GetRandomRatingsLogs(c *gin.Context) {
 		logs = logs[len(logs)-limit:]
 	}
 
+	// 获取最近的写入记录
+	recentWrites := tc.recentWrites
+	if len(recentWrites) > limit {
+		recentWrites = recentWrites[len(recentWrites)-limit:]
+	}
+
 	// 找出写入最多的电影TOP 10
 	type movieStat struct {
 		MovieID string `json:"movieId"`
@@ -157,7 +237,7 @@ func (tc *TestController) GetRandomRatingsLogs(c *gin.Context) {
 	for movieID, count := range tc.movieStats {
 		topMovies = append(topMovies, movieStat{
 			MovieID: movieID,
-			Count:   count,
+			Count:   int(count),
 		})
 	}
 
@@ -175,31 +255,85 @@ func (tc *TestController) GetRandomRatingsLogs(c *gin.Context) {
 		topMovies = topMovies[:10]
 	}
 
+	// 计算评分统计
+	ratingStats := tc.calculateRatingStats()
+
 	utils.SuccessData(c, gin.H{
 		"status":        "success",
-		"isRunning":     tc.isRunning,
-		"totalInserted": tc.totalInserted,
+		"isRunning":     atomic.LoadInt32(&tc.isRunning) == 1,
+		"totalInserted": atomic.LoadInt64(&tc.totalInserted),
 		"logs":          logs,
+		"recentWrites":  recentWrites,
 		"topMovies":     topMovies,
 		"movieCount":    len(tc.movieStats),
+		"ratingStats":   ratingStats,
 	})
 }
 
-// runRandomRatingsTask 运行随机评分写入任务
-func (tc *TestController) runRandomRatingsTask() {
-	ctx := context.Background()
+// calculateRatingStats 计算评分统计信息
+func (tc *TestController) calculateRatingStats() map[string]interface{} {
+	if len(tc.recentWrites) == 0 {
+		return map[string]interface{}{
+			"avgRating":          0.0,
+			"minRating":          0.0,
+			"maxRating":          0.0,
+			"ratingRange":        "0.5-5.0",
+			"userIdRange":        "10000-99999",
+			"movieIdRange":       "1-50",
+			"totalUsers":         0,
+			"ratingDistribution": map[string]int{},
+		}
+	}
 
-	// 获取HBase客户端
-	client := utils.GetClient().(interface {
-		Put(request *hrpc.Mutate) (*hrpc.Result, error)
-	})
+	var totalRating float64
+	minRating := 5.0
+	maxRating := 0.5
+	userSet := make(map[string]bool)
+	ratingDistribution := make(map[string]int)
 
+	for _, record := range tc.recentWrites {
+		totalRating += record.Rating
+		if record.Rating < minRating {
+			minRating = record.Rating
+		}
+		if record.Rating > maxRating {
+			maxRating = record.Rating
+		}
+		userSet[record.UserID] = true
+
+		// 评分分布统计
+		ratingKey := fmt.Sprintf("%.1f", record.Rating)
+		ratingDistribution[ratingKey]++
+	}
+
+	avgRating := totalRating / float64(len(tc.recentWrites))
+
+	return map[string]interface{}{
+		"avgRating":          avgRating,
+		"minRating":          minRating,
+		"maxRating":          maxRating,
+		"ratingRange":        "0.5-5.0",
+		"userIdRange":        "10000-99999",
+		"movieIdRange":       "1-50",
+		"totalUsers":         len(userSet),
+		"ratingDistribution": ratingDistribution,
+	}
+}
+
+// runOptimizedRandomRatingsTask 运行优化的随机评分写入任务
+func (tc *TestController) runOptimizedRandomRatingsTask() {
 	// 设置5分钟超时
 	timeout := time.After(5 * time.Minute)
-	ticker := time.NewTicker(100 * time.Millisecond) // 每100ms写入一次
+
+	// 降低写入频率，改为每500ms生成一批数据
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	tc.addLog("📝 开始随机写入评分数据...")
+	// 批量刷新定时器，每2秒强制刷新一次
+	flushTicker := time.NewTicker(2 * time.Second)
+	defer flushTicker.Stop()
+
+	tc.addLog("📝 开始优化版随机写入评分数据...")
 
 	for {
 		select {
@@ -207,51 +341,210 @@ func (tc *TestController) runRandomRatingsTask() {
 			tc.addLog("🛑 收到停止信号，任务结束")
 			return
 		case <-timeout:
-			tc.mu.Lock()
-			tc.isRunning = false
-			tc.mu.Unlock()
+			atomic.StoreInt32(&tc.isRunning, 0)
 			tc.addLog("⏰ 达到5分钟时间限制，任务自动结束")
 			return
 		case <-ticker.C:
-			// 执行一次随机写入
-			tc.performRandomWrite(ctx, client)
+			// 生成一批随机数据
+			tc.generateBatchData()
+		case <-flushTicker.C:
+			// 定期刷新批量数据
+			tc.flushBatch()
 		}
 	}
 }
 
-// performRandomWrite 执行一次随机写入
-func (tc *TestController) performRandomWrite(ctx context.Context, client interface {
-	Put(request *hrpc.Mutate) (*hrpc.Result, error)
-}) {
-	// 随机选择电影ID (1-50)
-	movieID := rand.Intn(50) + 1
-	movieIDStr := strconv.Itoa(movieID)
+// generateBatchData 生成批量数据
+func (tc *TestController) generateBatchData() {
+	tc.batchMu.Lock()
+	defer tc.batchMu.Unlock()
 
-	// 生成随机用户ID (10000-99999)
-	userID := rand.Intn(90000) + 10000
-	userIDStr := strconv.Itoa(userID)
+	// 生成5-10个随机评分数据
+	batchCount := rand.Intn(6) + 5
 
-	// 生成随机评分 (0.5-5.0, 步长0.5)
-	ratingFloat := (float64(rand.Intn(10)) + 1) * 0.5
+	for i := 0; i < batchCount; i++ {
+		// 随机选择电影ID (1-50)
+		movieID := rand.Intn(50) + 1
+		movieIDStr := strconv.Itoa(movieID)
 
-	// 使用通用评分写入函数
-	err := services.GlobalRatingTracker.WriteRatingToHBase(ctx, movieIDStr, userIDStr, ratingFloat, "test")
-	if err != nil {
-		tc.addLog(fmt.Sprintf("❌ 写入失败 (电影%s, 用户%s): %v", movieIDStr, userIDStr, err))
+		// 生成随机用户ID (10000-99999)
+		userID := rand.Intn(90000) + 10000
+		userIDStr := strconv.Itoa(userID)
+
+		// 生成随机评分 (0.5-5.0, 步长0.5)
+		ratingFloat := (float64(rand.Intn(10)) + 1) * 0.5
+
+		tc.batchBuffer = append(tc.batchBuffer, BatchWriteItem{
+			MovieID: movieIDStr,
+			UserID:  userIDStr,
+			Rating:  ratingFloat,
+			Source:  "test_batch",
+		})
+	}
+
+	// 如果批量缓冲区满了，立即刷新
+	if len(tc.batchBuffer) >= tc.batchSize {
+		tc.flushBatchUnsafe()
+	}
+}
+
+// flushBatch 刷新批量数据（带锁）
+func (tc *TestController) flushBatch() {
+	tc.batchMu.Lock()
+	defer tc.batchMu.Unlock()
+	tc.flushBatchUnsafe()
+}
+
+// flushBatchUnsafe 刷新批量数据（不带锁）
+func (tc *TestController) flushBatchUnsafe() {
+	if len(tc.batchBuffer) == 0 {
 		return
 	}
 
-	// 更新统计
+	startTime := time.Now()
+	ctx := context.Background()
+
+	// 批量写入到HBase
+	successCount, errorCount := tc.batchWriteToHBase(ctx, tc.batchBuffer)
+
+	// 更新统计信息
+	atomic.AddInt64(&tc.totalInserted, int64(successCount))
+	atomic.AddInt64(&tc.errorCount, int64(errorCount))
+
+	// 计算本批次的统计信息（在清空缓冲区之前）
+	var avgRating float64
+	userCount := make(map[string]bool)
+	batchSize := len(tc.batchBuffer)
+
+	for _, item := range tc.batchBuffer {
+		avgRating += item.Rating
+		userCount[item.UserID] = true
+	}
+
+	if batchSize > 0 {
+		avgRating /= float64(batchSize)
+	}
+
+	// 更新电影统计和写入记录
 	tc.mu.Lock()
-	tc.totalInserted++
-	tc.movieStats[movieIDStr]++
+	tc.writesMu.Lock()
+
+	timestamp := time.Now()
+	for _, item := range tc.batchBuffer {
+		tc.movieStats[item.MovieID]++
+
+		// 记录详细写入信息
+		writeRecord := WriteRecord{
+			MovieID:   item.MovieID,
+			UserID:    item.UserID,
+			Rating:    item.Rating,
+			Source:    item.Source,
+			Timestamp: timestamp,
+		}
+		tc.recentWrites = append(tc.recentWrites, writeRecord)
+	}
+
+	// 保持最近500条写入记录
+	if len(tc.recentWrites) > 500 {
+		tc.recentWrites = tc.recentWrites[len(tc.recentWrites)-500:]
+	}
+
+	// 记录延迟
+	latency := time.Since(startTime)
+	if len(tc.writeLatency) >= 100 {
+		tc.writeLatency = tc.writeLatency[1:] // 保持最近100次的延迟记录
+	}
+	tc.writeLatency = append(tc.writeLatency, latency)
+
+	tc.writesMu.Unlock()
 	tc.mu.Unlock()
 
-	// 每10次写入记录一次日志
-	if tc.totalInserted%10 == 0 {
-		tc.addLog(fmt.Sprintf("✅ 已写入 %d 条评分数据，最新: 电影%s 用户%s 评分%.1f",
-			tc.totalInserted, movieIDStr, userIDStr, ratingFloat))
+	// 清空缓冲区
+	tc.batchBuffer = tc.batchBuffer[:0]
+	tc.lastFlush = time.Now()
+
+	// 记录详细日志
+	if successCount > 0 {
+		tc.addLog(fmt.Sprintf("✅ 批量写入完成: 成功 %d 条, 失败 %d 条, 耗时 %v | 平均评分: %.1f, 用户数: %d",
+			successCount, errorCount, latency, avgRating, len(userCount)))
 	}
+}
+
+// batchWriteToHBase 批量写入到HBase
+func (tc *TestController) batchWriteToHBase(ctx context.Context, items []BatchWriteItem) (int, int) {
+	if len(items) == 0 {
+		return 0, 0
+	}
+
+	var successCount, errorCount int
+
+	// 按电影ID分组，减少HBase行锁竞争
+	movieGroups := make(map[string][]BatchWriteItem)
+	for _, item := range items {
+		movieGroups[item.MovieID] = append(movieGroups[item.MovieID], item)
+	}
+
+	// 并发写入不同电影的数据
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for movieID, movieItems := range movieGroups {
+		wg.Add(1)
+		go func(mID string, mItems []BatchWriteItem) {
+			defer wg.Done()
+
+			success, errors := tc.writeMovieRatingsBatch(ctx, mID, mItems)
+
+			mu.Lock()
+			successCount += success
+			errorCount += errors
+			mu.Unlock()
+		}(movieID, movieItems)
+	}
+
+	wg.Wait()
+	return successCount, errorCount
+}
+
+// writeMovieRatingsBatch 批量写入单个电影的评分数据
+func (tc *TestController) writeMovieRatingsBatch(ctx context.Context, movieID string, items []BatchWriteItem) (int, int) {
+	// 构建批量Put请求
+	values := make(map[string][]byte)
+	timestamp := time.Now().Unix()
+
+	for _, item := range items {
+		ratingValue := fmt.Sprintf("%.1f:%s:%d", item.Rating, item.UserID, timestamp)
+		values[item.UserID] = []byte(ratingValue)
+	}
+
+	// 构建行键
+	rowKey := fmt.Sprintf("%s_ratings", movieID)
+
+	// 创建Put请求
+	putRequest, err := hrpc.NewPutStr(ctx, "movies", rowKey, map[string]map[string][]byte{
+		"ratings": values,
+	})
+
+	if err != nil {
+		return 0, len(items)
+	}
+
+	// 获取HBase客户端并执行
+	client := utils.GetClient().(interface {
+		Put(request *hrpc.Mutate) (*hrpc.Result, error)
+	})
+
+	_, err = client.Put(putRequest)
+	if err != nil {
+		return 0, len(items)
+	}
+
+	// 记录到追踪服务
+	for _, item := range items {
+		services.GlobalRatingTracker.RecordRatingWrite(item.MovieID, item.UserID, item.Rating, item.Source)
+	}
+
+	return len(items), 0
 }
 
 // addLog 添加日志
