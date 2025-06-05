@@ -103,3 +103,4 @@ cpu.prof
 build/
 dist/
 bin/ 
+config.yaml

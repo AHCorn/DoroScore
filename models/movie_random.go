@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tsuna/gohbase/hrpc"
 )
 
 // GetRandomMovies 获取随机电影（带缓存）- 适配新的数据库结构
@@ -36,7 +38,7 @@ func GetRandomMovies(count int) ([]Movie, error) {
 	for _, id := range randomIDs {
 		movieID := fmt.Sprintf("%d", id)
 
-		// 使用新的数据库结构获取电影信息
+		// 使用新的数据库结构获取电影信息 - 同时读取stats数据
 		data, err := utils.GetMovie(ctx, movieID)
 		if err != nil {
 			continue
@@ -46,7 +48,31 @@ func GetRandomMovies(count int) ([]Movie, error) {
 			continue
 		}
 
-		movieData := utils.ParseMovieData(movieID, data)
+		// 尝试读取stats数据
+		resultMap := data
+		statsGet, err := hrpc.NewGetStr(ctx, "movies", fmt.Sprintf("%s_stats", movieID))
+		if err == nil {
+			client := utils.GetClient().(interface {
+				Get(request *hrpc.Get) (*hrpc.Result, error)
+			})
+
+			if statsResult, err := client.Get(statsGet); err == nil && len(statsResult.Cells) > 0 {
+				// 将stats数据合并到resultMap中
+				if resultMap["info"] == nil {
+					resultMap["info"] = make(map[string][]byte)
+				}
+				for _, cell := range statsResult.Cells {
+					family := string(cell.Family)
+					qualifier := string(cell.Qualifier)
+
+					if family == "info" {
+						resultMap["info"][qualifier] = cell.Value
+					}
+				}
+			}
+		}
+
+		movieData := utils.ParseMovieData(movieID, resultMap)
 
 		movie := Movie{
 			MovieID: movieID,
@@ -69,6 +95,14 @@ func GetRandomMovies(count int) ([]Movie, error) {
 
 		if avgRating, ok := movieData["avgRating"].(float64); ok {
 			movie.AvgRating = avgRating
+		} else {
+			// 如果没有评分数据，尝试计算并存储
+			avgRating, ratingCount, err := CalculateAndStoreMovieAvgRating(ctx, movieID)
+			if err == nil && avgRating > 0.0 {
+				movie.AvgRating = avgRating
+				fmt.Printf("✅ 随机电影: 成功计算并存储电影 %s 的平均评分: %.2f (基于 %d 个评分)\n",
+					movieID, avgRating, ratingCount)
+			}
 		}
 
 		// 添加标签

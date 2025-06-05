@@ -6,6 +6,8 @@ import (
 	"gohbase/utils"
 	"strconv"
 	"strings"
+
+	"github.com/tsuna/gohbase/hrpc"
 )
 
 // GetTotalMoviesCount 获取电影总数
@@ -50,7 +52,7 @@ func GetMoviesList(page, perPage int) (*MovieList, error) {
 		utils.Cache.Set("total_movies_count", totalMovies)
 	}
 
-	// 解析电影列表
+	// 解析电影列表 - 改进为同时读取stats数据
 	movies := []Movie{}
 
 	for _, result := range results {
@@ -70,17 +72,39 @@ func GetMoviesList(page, perPage int) (*MovieList, error) {
 
 		// 手动构建结果映射
 		resultMap := make(map[string]map[string][]byte)
+		infoFamily := make(map[string][]byte)
+
+		// 处理_info行数据
 		for _, cell := range result.Cells {
 			family := string(cell.Family)
 			qualifier := string(cell.Qualifier)
 
-			if _, ok := resultMap[family]; !ok {
-				resultMap[family] = make(map[string][]byte)
+			if family == "info" {
+				infoFamily[qualifier] = cell.Value
 			}
-
-			resultMap[family][qualifier] = cell.Value
 		}
 
+		// 尝试读取stats数据
+		statsGet, err := hrpc.NewGetStr(ctx, "movies", fmt.Sprintf("%s_stats", movieID))
+		if err == nil {
+			client := utils.GetClient().(interface {
+				Get(request *hrpc.Get) (*hrpc.Result, error)
+			})
+
+			if statsResult, err := client.Get(statsGet); err == nil && len(statsResult.Cells) > 0 {
+				// 将stats数据合并到infoFamily中
+				for _, cell := range statsResult.Cells {
+					family := string(cell.Family)
+					qualifier := string(cell.Qualifier)
+
+					if family == "info" {
+						infoFamily[qualifier] = cell.Value
+					}
+				}
+			}
+		}
+
+		resultMap["info"] = infoFamily
 		movieData := utils.ParseMovieData(movieID, resultMap)
 
 		movie := Movie{
@@ -104,6 +128,14 @@ func GetMoviesList(page, perPage int) (*MovieList, error) {
 
 		if avgRating, ok := movieData["avgRating"].(float64); ok {
 			movie.AvgRating = avgRating
+		} else {
+			// 如果没有评分数据，尝试计算并存储
+			avgRating, ratingCount, err := CalculateAndStoreMovieAvgRating(ctx, movieID)
+			if err == nil && avgRating > 0.0 {
+				movie.AvgRating = avgRating
+				fmt.Printf("✅ 电影列表: 成功计算并存储电影 %s 的平均评分: %.2f (基于 %d 个评分)\n",
+					movieID, avgRating, ratingCount)
+			}
 		}
 
 		// 添加链接数据
