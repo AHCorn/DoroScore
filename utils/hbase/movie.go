@@ -269,38 +269,9 @@ func GetMovieStats(ctx context.Context, movieID string) (map[string]interface{},
 	return stats, nil
 }
 
-// GetMovieLinks 获取电影外部链接
+// GetMovieLinks 获取电影外部链接（使用通用函数）
 func GetMovieLinks(ctx context.Context, movieID string) (map[string]interface{}, error) {
-	// 获取电影的links行
-	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_links")
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := hbaseClient.Get(get)
-	if err != nil {
-		return nil, err
-	}
-
-	links := make(map[string]interface{})
-
-	if result.Cells != nil {
-		for _, cell := range result.Cells {
-			if string(cell.Family) == "info" {
-				qualifier := string(cell.Qualifier)
-				value := string(cell.Value)
-
-				switch qualifier {
-				case "imdbId":
-					links["imdbId"] = value
-				case "tmdbId":
-					links["tmdbId"] = value
-				}
-			}
-		}
-	}
-
-	return links, nil
+	return GetMovieLinksWithUrls(ctx, movieID)
 }
 
 // GetMovieGenome 获取电影基因分数（使用新的宽列格式）

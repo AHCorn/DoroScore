@@ -67,20 +67,20 @@ func GetMovieByID(movieID string) (*MovieDetail, error) {
 		movie.AvgRating = 0.0
 	}
 
-	// 设置链接
-	if links, ok := movieData["links"].(map[string]interface{}); ok {
+	// 设置链接（使用通用函数）
+	if linksData, err := utils.GetMovieLinks(ctx, movieID); err == nil {
 		linkObj := Links{}
 
-		if imdbId, ok := links["imdbId"].(string); ok {
+		if imdbId, ok := linksData["imdbId"].(string); ok {
 			linkObj.ImdbID = imdbId
 		}
-		if imdbUrl, ok := links["imdbUrl"].(string); ok {
+		if imdbUrl, ok := linksData["imdbUrl"].(string); ok {
 			linkObj.ImdbURL = imdbUrl
 		}
-		if tmdbId, ok := links["tmdbId"].(string); ok {
+		if tmdbId, ok := linksData["tmdbId"].(string); ok {
 			linkObj.TmdbID = tmdbId
 		}
-		if tmdbUrl, ok := links["tmdbUrl"].(string); ok {
+		if tmdbUrl, ok := linksData["tmdbUrl"].(string); ok {
 			linkObj.TmdbURL = tmdbUrl
 		}
 

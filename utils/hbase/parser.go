@@ -1,9 +1,12 @@
 package hbase
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/tsuna/gohbase/hrpc"
 )
 
 // ParseMovieData 从HBase结果解析电影数据（适配新的数据库结构）
@@ -36,24 +39,6 @@ func ParseMovieData(movieID string, data map[string]map[string][]byte) map[strin
 			if timestamp, err := strconv.ParseInt(string(updatedTime), 10, 64); err == nil {
 				result["updatedTime"] = timestamp
 			}
-		}
-
-		// 处理外部链接
-		if imdbId, ok := infoData["imdbId"]; ok {
-			if result["links"] == nil {
-				result["links"] = map[string]interface{}{}
-			}
-			imdbIdStr := string(imdbId)
-			result["links"].(map[string]interface{})["imdbId"] = imdbIdStr
-			result["links"].(map[string]interface{})["imdbUrl"] = fmt.Sprintf("https://www.imdb.com/title/tt%s/", imdbIdStr)
-		}
-		if tmdbId, ok := infoData["tmdbId"]; ok {
-			if result["links"] == nil {
-				result["links"] = map[string]interface{}{}
-			}
-			tmdbIdStr := string(tmdbId)
-			result["links"].(map[string]interface{})["tmdbId"] = tmdbIdStr
-			result["links"].(map[string]interface{})["tmdbUrl"] = fmt.Sprintf("https://www.themoviedb.org/movie/%s", tmdbIdStr)
 		}
 	}
 
@@ -133,9 +118,6 @@ func ParseMovieData(movieID string, data map[string]map[string][]byte) map[strin
 	}
 
 	// 设置默认值
-	if result["links"] == nil {
-		result["links"] = map[string]interface{}{}
-	}
 	if result["avgRating"] == nil {
 		result["avgRating"] = 0.0
 	}
@@ -150,4 +132,52 @@ func ParseMovieData(movieID string, data map[string]map[string][]byte) map[strin
 	}
 
 	return result
+}
+
+// GetMovieLinksWithUrls 获取电影外部链接并生成完整URL（通用函数）
+func GetMovieLinksWithUrls(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	// 获取电影的links行
+	get, err := hrpc.NewGetStr(ctx, "movies", movieID+"_links")
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := hbaseClient.Get(get)
+	if err != nil {
+		return nil, err
+	}
+
+	links := make(map[string]interface{})
+
+	if result.Cells != nil {
+		for _, cell := range result.Cells {
+			if string(cell.Family) == "info" {
+				qualifier := string(cell.Qualifier)
+				value := string(cell.Value)
+
+				switch qualifier {
+				case "imdbId":
+					links["imdbId"] = value
+					// 生成IMDB URL
+					links["imdbUrl"] = fmt.Sprintf("https://www.imdb.com/title/tt%s/", value)
+				case "tmdbId":
+					links["tmdbId"] = value
+					// 生成TMDB URL
+					links["tmdbUrl"] = fmt.Sprintf("https://www.themoviedb.org/movie/%s", value)
+				}
+			}
+		}
+	}
+
+	// 如果没有找到任何链接数据，返回空的links对象
+	if len(links) == 0 {
+		links = map[string]interface{}{
+			"imdbId":  "",
+			"imdbUrl": "",
+			"tmdbId":  "",
+			"tmdbUrl": "",
+		}
+	}
+
+	return links, nil
 }

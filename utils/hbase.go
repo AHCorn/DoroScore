@@ -69,3 +69,8 @@ func GetClient() interface{} {
 func GetMoviesRatingsBatch(ctx context.Context, movieIDs []string) (map[string]map[string]interface{}, error) {
 	return hbase.GetMoviesRatingsBatch(ctx, movieIDs)
 }
+
+// GetMovieLinks 获取电影外部链接（通用函数）
+func GetMovieLinks(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	return hbase.GetMovieLinksWithUrls(ctx, movieID)
+}

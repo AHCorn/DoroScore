@@ -327,6 +327,27 @@ func buildMovieFromParsedData(movieID string, movieData map[string]interface{}) 
 		movie.Tags = tags
 	}
 
+	// 添加链接数据（使用通用函数）
+	ctx := context.Background()
+	if linksData, err := utils.GetMovieLinks(ctx, movieID); err == nil {
+		linkObj := Links{}
+
+		if imdbId, ok := linksData["imdbId"].(string); ok {
+			linkObj.ImdbID = imdbId
+		}
+		if imdbUrl, ok := linksData["imdbUrl"].(string); ok {
+			linkObj.ImdbURL = imdbUrl
+		}
+		if tmdbId, ok := linksData["tmdbId"].(string); ok {
+			linkObj.TmdbID = tmdbId
+		}
+		if tmdbUrl, ok := linksData["tmdbUrl"].(string); ok {
+			linkObj.TmdbURL = tmdbUrl
+		}
+
+		movie.Links = linkObj
+	}
+
 	return movie
 }
 
@@ -382,6 +403,27 @@ func buildMovieFromData(movieID string, parsedData map[string]interface{}, allDa
 
 	if tags, ok := parsedData["uniqueTags"].([]string); ok {
 		movie.Tags = tags
+	}
+
+	// 添加链接数据（使用通用函数）
+	ctx := context.Background()
+	if linksData, err := utils.GetMovieLinks(ctx, movieID); err == nil {
+		linkObj := Links{}
+
+		if imdbId, ok := linksData["imdbId"].(string); ok {
+			linkObj.ImdbID = imdbId
+		}
+		if imdbUrl, ok := linksData["imdbUrl"].(string); ok {
+			linkObj.ImdbURL = imdbUrl
+		}
+		if tmdbId, ok := linksData["tmdbId"].(string); ok {
+			linkObj.TmdbID = tmdbId
+		}
+		if tmdbUrl, ok := linksData["tmdbUrl"].(string); ok {
+			linkObj.TmdbURL = tmdbUrl
+		}
+
+		movie.Links = linkObj
 	}
 
 	return movie
