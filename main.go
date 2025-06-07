@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"gohbase/config"
+	"gohbase/models"
 	"gohbase/routes"
 	"gohbase/utils"
 	"net/http"
@@ -47,6 +48,19 @@ func main() {
 	if err != nil {
 		logrus.Fatalf("初始化HBase失败: %v", err)
 	}
+
+	// 在后台构建或初始化SQLite搜索索引
+	go func() {
+		if !models.GetSearchIndex().IsIndexReady() {
+			logrus.Info("搜索索引不存在或为空，将在后台开始构建...")
+			err := models.GetSearchIndex().BuildSearchIndex(context.Background())
+			if err != nil {
+				logrus.Errorf("后台构建SQLite搜索索引失败: %v", err)
+			}
+		} else {
+			logrus.Info("已找到现有SQLite索引，跳过构建。")
+		}
+	}()
 
 	// 设置路由
 	router := routes.SetupRouter()

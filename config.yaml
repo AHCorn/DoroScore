@@ -3,8 +3,8 @@ server:
   port: "5000"
   
 hbase:
-  host: "192.168.144.88"
-  zk_quorum: "192.168.144.88"
+  host: "192.168.2.15"
+  zk_quorum: "192.168.2.15"
   zk_port: "2181"
   master_port: "16000"
   thrift_port: "9090"

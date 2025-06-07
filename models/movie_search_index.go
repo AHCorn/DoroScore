@@ -4,57 +4,72 @@ import (
 	"context"
 	"fmt"
 	"gohbase/utils"
-	"sort"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	"github.com/tsuna/gohbase"
 	"github.com/tsuna/gohbase/hrpc"
 )
 
-// SearchIndex 内存搜索索引
+// SearchIndex 搜索索引管理器。
 type SearchIndex struct {
-	titleIndex  map[string][]string // 标题词 -> 电影ID列表
-	genreIndex  map[string][]string // 类型 -> 电影ID列表
-	lastUpdated time.Time
-	mu          sync.RWMutex
+	mu sync.RWMutex
+}
+
+// MovieIdWithTitle 用于存储电影ID和标题的简单结构体。
+type MovieIdWithTitle struct {
+	ID    string
+	Title string
 }
 
 var globalSearchIndex *SearchIndex
 var indexOnce sync.Once
 
-// GetSearchIndex 获取全局搜索索引实例
+// GetSearchIndex 返回全局搜索索引实例。
 func GetSearchIndex() *SearchIndex {
 	indexOnce.Do(func() {
-		globalSearchIndex = &SearchIndex{
-			titleIndex: make(map[string][]string),
-			genreIndex: make(map[string][]string),
-		}
+		globalSearchIndex = &SearchIndex{}
 	})
 	return globalSearchIndex
 }
 
-// BuildSearchIndex 构建搜索索引
+// BuildSearchIndex 扫描HBase并构建持久化的SQLite索引。
 func (si *SearchIndex) BuildSearchIndex(ctx context.Context) error {
 	si.mu.Lock()
 	defer si.mu.Unlock()
 
-	fmt.Println("开始构建搜索索引...")
+	logrus.Info("开始构建SQLite搜索索引...")
 	start := time.Now()
 
-	// 清空现有索引
-	si.titleIndex = make(map[string][]string)
-	si.genreIndex = make(map[string][]string)
+	if err := utils.ResetDatabase(); err != nil {
+		logrus.Warnf("无法重置数据库，但仍将继续: %v", err)
+	}
+	db, err := utils.InitDB()
+	if err != nil {
+		return fmt.Errorf("初始化SQLite数据库失败: %w", err)
+	}
 
-	// 扫描所有电影_info行
 	scan, err := hrpc.NewScanStr(ctx, "movies")
+	if err != nil {
+		return fmt.Errorf("创建HBase扫描失败: %w", err)
+	}
+	scanner := utils.GetClient().(gohbase.Client).Scan(scan)
+
+	// 使用事务进行批量插入以提高性能
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("INSERT INTO movie_index (movie_id, title) VALUES (?, ?)")
 	if err != nil {
 		return err
 	}
-
-	scanner := utils.GetClient().(interface {
-		Scan(request *hrpc.Scan) hrpc.Scanner
-	}).Scan(scan)
+	defer stmt.Close()
 
 	indexedCount := 0
 	for {
@@ -62,114 +77,92 @@ func (si *SearchIndex) BuildSearchIndex(ctx context.Context) error {
 		if err != nil {
 			break
 		}
-
 		if len(res.Cells) == 0 {
 			continue
 		}
 
 		rowKey := string(res.Cells[0].Row)
-
-		// 只处理_info行
 		if !strings.HasSuffix(rowKey, "_info") {
 			continue
 		}
 
 		movieID := strings.TrimSuffix(rowKey, "_info")
-
-		// 提取标题和类型信息
 		var title string
-		var genres []string
-
 		for _, cell := range res.Cells {
-			family := string(cell.Family)
 			qualifier := string(cell.Qualifier)
-
-			if family == "info" {
-				switch qualifier {
-				case "title":
-					title = string(cell.Value)
-				case "genres":
-					if len(cell.Value) > 0 {
-						genres = strings.Split(string(cell.Value), "|")
-					}
-				}
+			if string(cell.Family) == "info" && qualifier == "title" {
+				title = string(cell.Value)
 			}
 		}
 
-		// 建立标题索引
 		if title != "" {
-			words := tokenizeTitle(title)
-			for _, word := range words {
-				word = strings.ToLower(word)
-				if len(word) >= 2 { // 只索引长度>=2的词
-					si.titleIndex[word] = appendUnique(si.titleIndex[word], movieID)
-				}
+			if _, err := stmt.Exec(movieID, title); err != nil {
+				return err
 			}
-		}
-
-		// 建立类型索引
-		for _, genre := range genres {
-			genre = strings.ToLower(strings.TrimSpace(genre))
-			if genre != "" {
-				si.genreIndex[genre] = appendUnique(si.genreIndex[genre], movieID)
+			indexedCount++
+			if indexedCount%1000 == 0 {
+				logrus.Infof("已索引 %d 部电影到SQLite...", indexedCount)
 			}
-		}
-
-		indexedCount++
-		if indexedCount%1000 == 0 {
-			fmt.Printf("已索引 %d 部电影...\n", indexedCount)
 		}
 	}
 
-	si.lastUpdated = time.Now()
+	// 提交数据
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交事务失败: %w", err)
+	}
+
+	// 在数据插入后创建FTS表并重建索引
+	// UNINDEXED告诉FTS5不要为movie_id创建全文索引，以节省空间和提高效率
+	if _, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS movie_fts USING fts5(movie_id UNINDEXED, title, content='movie_index', content_rowid='id')`); err != nil {
+		return fmt.Errorf("创建FTS表失败: %w", err)
+	}
+	if _, err := db.Exec(`INSERT INTO movie_fts(movie_fts) VALUES('rebuild')`); err != nil {
+		return fmt.Errorf("重建FTS索引失败: %w", err)
+	}
+
 	duration := time.Since(start)
-
-	fmt.Printf("搜索索引构建完成！索引了 %d 部电影，耗时: %v\n", indexedCount, duration)
-	fmt.Printf("标题索引词数: %d, 类型索引数: %d\n", len(si.titleIndex), len(si.genreIndex))
-
+	logrus.Infof("SQLite搜索索引构建成功！共索引 %d 部电影，耗时 %v", indexedCount, duration)
 	return nil
 }
 
-// SearchMoviesWithIndex 使用索引进行快速搜索
+// SearchMoviesWithIndex 使用SQLite索引进行快速搜索。
 func (si *SearchIndex) SearchMoviesWithIndex(ctx context.Context, query string, page, perPage int) (*MovieList, error) {
 	si.mu.RLock()
 	defer si.mu.RUnlock()
 
-	if len(si.titleIndex) == 0 {
-		// 索引未建立，返回错误提示需要构建索引
-		return nil, fmt.Errorf("搜索索引未建立，请先调用BuildSearchIndex")
+	if !si.IsIndexReady() {
+		return nil, fmt.Errorf("搜索索引未就绪")
 	}
 
-	queryLower := strings.ToLower(strings.TrimSpace(query))
-	var matchedMovieIDs []string
-
-	// 1. 尝试精确匹配类型
-	if genreMovies, exists := si.genreIndex[queryLower]; exists {
-		matchedMovieIDs = append(matchedMovieIDs, genreMovies...)
+	db, err := utils.GetDB()
+	if err != nil {
+		return nil, err
 	}
 
-	// 2. 标题搜索
-	titleMatches := si.searchInTitleIndex(queryLower)
-	matchedMovieIDs = append(matchedMovieIDs, titleMatches...)
+	// 构造FTS5查询语句
+	sanitizedQuery := `"` + strings.ReplaceAll(query, `"`, `""`) + `*"`
 
-	// 3. 去重
-	matchedMovieIDs = removeDuplicates(matchedMovieIDs)
+	// 查询FTS表 - 修改为同时获取标题
+	rows, err := db.QueryContext(ctx, "SELECT mi.movie_id, mi.title FROM movie_index mi JOIN movie_fts ft ON mi.id = ft.rowid WHERE ft.title MATCH ? ORDER BY ft.rank", sanitizedQuery)
+	if err != nil {
+		return nil, fmt.Errorf("在SQLite FTS索引中搜索失败: %w", err)
+	}
+	defer rows.Close()
 
-	// 4. 排序（可选）
-	sort.Strings(matchedMovieIDs)
-
-	if len(matchedMovieIDs) == 0 {
-		return &MovieList{
-			Movies:      []Movie{},
-			TotalMovies: 0,
-			Page:        page,
-			PerPage:     perPage,
-			TotalPages:  0,
-		}, nil
+	var matchedMovies []MovieIdWithTitle
+	for rows.Next() {
+		var movie MovieIdWithTitle
+		if err := rows.Scan(&movie.ID, &movie.Title); err != nil {
+			return nil, err
+		}
+		matchedMovies = append(matchedMovies, movie)
 	}
 
-	// 5. 分页
-	totalMatches := len(matchedMovieIDs)
+	if len(matchedMovies) == 0 {
+		return &MovieList{Movies: []Movie{}, TotalMovies: 0, Page: page, PerPage: perPage, TotalPages: 0}, nil
+	}
+
+	totalMatches := len(matchedMovies)
 	totalPages := (totalMatches + perPage - 1) / perPage
 	startIdx := (page - 1) * perPage
 	endIdx := startIdx + perPage
@@ -177,13 +170,13 @@ func (si *SearchIndex) SearchMoviesWithIndex(ctx context.Context, query string, 
 		endIdx = totalMatches
 	}
 
-	var pageMovieIDs []string
+	var pageMovies []MovieIdWithTitle
 	if startIdx < totalMatches {
-		pageMovieIDs = matchedMovieIDs[startIdx:endIdx]
+		pageMovies = matchedMovies[startIdx:endIdx]
 	}
 
-	// 6. 批量获取电影详情
-	movies, err := si.getMovieDetailsBatch(ctx, pageMovieIDs)
+	// 传递电影ID和标题给批量获取函数
+	movies, err := si.getMovieDetailsBatchWithTitles(ctx, pageMovies)
 	if err != nil {
 		return nil, err
 	}
@@ -197,176 +190,133 @@ func (si *SearchIndex) SearchMoviesWithIndex(ctx context.Context, query string, 
 	}, nil
 }
 
-// searchInTitleIndex 在标题索引中搜索
-func (si *SearchIndex) searchInTitleIndex(query string) []string {
-	var results []string
-
-	// 1. 完整匹配
-	if movieIDs, exists := si.titleIndex[query]; exists {
-		results = append(results, movieIDs...)
+// IsIndexReady 检查SQLite索引是否可用。
+func (si *SearchIndex) IsIndexReady() bool {
+	if _, err := os.Stat("./movie_index.db"); os.IsNotExist(err) {
+		return false
 	}
 
-	// 2. 前缀匹配
-	for word, movieIDs := range si.titleIndex {
-		if strings.HasPrefix(word, query) && word != query {
-			results = append(results, movieIDs...)
-		}
+	db, err := utils.GetDB()
+	if err != nil {
+		logrus.Warnf("无法检查索引就绪状态，获取数据库失败: %v", err)
+		return false
 	}
 
-	// 3. 包含匹配
-	for word, movieIDs := range si.titleIndex {
-		if strings.Contains(word, query) && !strings.HasPrefix(word, query) && word != query {
-			results = append(results, movieIDs...)
-		}
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM movie_index").Scan(&count)
+	if err != nil {
+		logrus.Warnf("无法查询索引计数: %v", err)
+		return false
 	}
 
-	return results
+	return count > 0
 }
 
-// getMovieDetailsBatch 批量获取电影详情
-func (si *SearchIndex) getMovieDetailsBatch(ctx context.Context, movieIDs []string) ([]Movie, error) {
+// getMovieDetailsBatchWithTitles 批量获取电影详情，使用SQLite中的标题。
+func (si *SearchIndex) getMovieDetailsBatchWithTitles(ctx context.Context, moviesWithTitles []MovieIdWithTitle) ([]Movie, error) {
 	var movies []Movie
+	var getReqs []*hrpc.Get
 
-	for _, movieID := range movieIDs {
-		// 获取电影基本信息和统计信息
-		infoGet, err := hrpc.NewGetStr(ctx, "movies", fmt.Sprintf("%s_info", movieID))
-		if err != nil {
+	// 映射，用于快速查找每个ID对应的标题
+	titleMap := make(map[string]string)
+
+	for _, movie := range moviesWithTitles {
+		// 存储ID->标题的映射
+		titleMap[movie.ID] = movie.Title
+
+		// 只获取电影的stats（评分、统计信息）
+		statsGet, _ := hrpc.NewGetStr(ctx, "movies", fmt.Sprintf("%s_stats", movie.ID))
+		// 以及其他可能需要的数据，如links等
+		linksGet, _ := hrpc.NewGetStr(ctx, "movies", fmt.Sprintf("%s_links", movie.ID))
+
+		getReqs = append(getReqs, statsGet, linksGet)
+	}
+
+	// TODO: 可使用goroutine并发获取以提升性能
+	movieDataMap := make(map[string]map[string]map[string][]byte)
+	client := utils.GetClient().(gohbase.Client)
+
+	for _, req := range getReqs {
+		res, err := client.Get(req)
+		if err != nil || res == nil || len(res.Cells) == 0 {
 			continue
 		}
 
-		statsGet, err := hrpc.NewGetStr(ctx, "movies", fmt.Sprintf("%s_stats", movieID))
-		if err != nil {
-			continue
+		rowKey := string(res.Cells[0].Row)
+		parts := strings.Split(rowKey, "_")
+		movieID := parts[0]
+		rowType := parts[1]
+
+		if _, ok := movieDataMap[movieID]; !ok {
+			movieDataMap[movieID] = make(map[string]map[string][]byte)
+		}
+		if _, ok := movieDataMap[movieID][rowType]; !ok {
+			movieDataMap[movieID][rowType] = make(map[string][]byte)
 		}
 
-		client := utils.GetClient().(interface {
-			Get(request *hrpc.Get) (*hrpc.Result, error)
-		})
+		for _, cell := range res.Cells {
+			key := fmt.Sprintf("%s:%s", string(cell.Family), string(cell.Qualifier))
+			movieDataMap[movieID][rowType][key] = cell.Value
+		}
+	}
 
-		// 获取基本信息
-		infoResult, err := client.Get(infoGet)
-		if err != nil || len(infoResult.Cells) == 0 {
-			continue
+	// 为每个找到的movieID构建完整的Movie对象
+	for _, movieWithTitle := range moviesWithTitles {
+		movieID := movieWithTitle.ID
+
+		// 获取从SQLite中读取的标题
+		title := movieWithTitle.Title
+
+		// 创建基本的Movie对象
+		movie := Movie{
+			MovieID: movieID,
+			Title:   title, // 直接设置标题
 		}
 
-		// 获取统计信息（可能不存在）
-		statsResult, _ := client.Get(statsGet)
+		// 如果有HBase数据，填充其他详情
+		if data, ok := movieDataMap[movieID]; ok {
+			// 从HBase解析数据
+			parsedData := utils.ParseMovieData(movieID, data)
 
-		// 构建结果映射
-		resultMap := make(map[string]map[string][]byte)
-		infoFamily := make(map[string][]byte)
+			// 使用buildMovieFromData填充其他字段
+			fullMovie := buildMovieFromData(movieID, parsedData, data)
 
-		// 处理基本信息
-		for _, cell := range infoResult.Cells {
-			family := string(cell.Family)
-			qualifier := string(cell.Qualifier)
-
-			if family == "info" {
-				infoFamily[qualifier] = cell.Value
+			// 复制所有非空字段，但保留我们已经设置的标题
+			if fullMovie.Genres != nil {
+				movie.Genres = fullMovie.Genres
+			}
+			if fullMovie.AvgRating != 0 {
+				movie.AvgRating = fullMovie.AvgRating
+			}
+			if fullMovie.Links.ImdbID != "" {
+				movie.Links = fullMovie.Links
+			}
+			if fullMovie.Tags != nil {
+				movie.Tags = fullMovie.Tags
 			}
 		}
 
-		// 处理统计信息（如果存在）
-		if statsResult != nil && len(statsResult.Cells) > 0 {
-			for _, cell := range statsResult.Cells {
-				family := string(cell.Family)
-				qualifier := string(cell.Qualifier)
-
-				if family == "info" {
-					// 将stats行的info数据合并到infoFamily中
-					infoFamily[qualifier] = cell.Value
-				}
+		// 如果平均分为0，尝试计算它
+		if movie.AvgRating == 0.0 {
+			avgRating, ratingCount, err := CalculateAndStoreMovieAvgRating(ctx, movieID)
+			if err == nil && avgRating > 0.0 {
+				movie.AvgRating = avgRating
+				logrus.Infof("✅ 成功计算并存储电影 %s 的平均评分: %.2f (基于 %d 个评分)",
+					movieID, avgRating, ratingCount)
 			}
 		}
 
-		resultMap["info"] = infoFamily
-		movieData := utils.ParseMovieData(movieID, resultMap)
-
-		movie := buildMovieFromParsedData(movieID, movieData)
-		if movie != nil {
-			// 如果仍然没有平均评分，则计算并存储
-			if movie.AvgRating == 0.0 {
-				avgRating, ratingCount, err := CalculateAndStoreMovieAvgRating(ctx, movieID)
-				if err == nil && avgRating > 0.0 {
-					movie.AvgRating = avgRating
-					fmt.Printf("✅ 成功计算并存储电影 %s 的平均评分: %.2f (基于 %d 个评分)\n",
-						movieID, avgRating, ratingCount)
-				}
-			}
-			movies = append(movies, *movie)
-		}
+		movies = append(movies, movie)
 	}
 
 	return movies, nil
 }
 
-// 辅助函数
-
-// tokenizeTitle 分词标题
-func tokenizeTitle(title string) []string {
-	// 简单的分词：按空格、括号、连字符分割
-	title = strings.ToLower(title)
-	separators := []string{" ", "(", ")", "-", ":", ",", ".", "'", "\""}
-
-	words := []string{title} // 从完整标题开始
-	for _, sep := range separators {
-		var newWords []string
-		for _, word := range words {
-			parts := strings.Split(word, sep)
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if len(part) > 0 {
-					newWords = append(newWords, part)
-				}
-			}
-		}
-		words = newWords
-	}
-
-	return words
-}
-
-// appendUnique 添加唯一元素
-func appendUnique(slice []string, item string) []string {
-	for _, existing := range slice {
-		if existing == item {
-			return slice
+func indexOf(slice []string, item string) int {
+	for i, v := range slice {
+		if v == item {
+			return i
 		}
 	}
-	return append(slice, item)
-}
-
-// removeDuplicates 去重
-func removeDuplicates(slice []string) []string {
-	keys := make(map[string]bool)
-	var result []string
-
-	for _, item := range slice {
-		if !keys[item] {
-			keys[item] = true
-			result = append(result, item)
-		}
-	}
-
-	return result
-}
-
-// IsIndexReady 检查索引是否已准备好
-func (si *SearchIndex) IsIndexReady() bool {
-	si.mu.RLock()
-	defer si.mu.RUnlock()
-	return len(si.titleIndex) > 0
-}
-
-// GetIndexStats 获取索引统计信息
-func (si *SearchIndex) GetIndexStats() map[string]interface{} {
-	si.mu.RLock()
-	defer si.mu.RUnlock()
-
-	return map[string]interface{}{
-		"titleIndexSize": len(si.titleIndex),
-		"genreIndexSize": len(si.genreIndex),
-		"lastUpdated":    si.lastUpdated,
-		"isReady":        len(si.titleIndex) > 0,
-	}
+	return -1
 }
