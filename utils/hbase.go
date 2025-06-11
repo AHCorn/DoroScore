@@ -79,3 +79,8 @@ func GetMovieLinks(ctx context.Context, movieID string) (map[string]interface{},
 func GetMovieTags(ctx context.Context, movieID string) (map[string]interface{}, error) {
 	return hbase.GetMovieTagsWithDetails(ctx, movieID)
 }
+
+// GetMovieStats 获取电影统计信息
+func GetMovieStats(ctx context.Context, movieID string) (map[string]interface{}, error) {
+	return hbase.GetMovieStats(ctx, movieID)
+}

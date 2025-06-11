@@ -90,6 +90,7 @@ func SetupRouter() *gin.Engine {
 	{
 		hotness.GET("/movies", hotnessController.GetHotMovies)
 		hotness.GET("/movie/:id", hotnessController.GetMovieHotness)
+		hotness.GET("/movie/:id/threshold", hotnessController.GetMovieRatingThreshold)
 		hotness.GET("/stats", hotnessController.GetWriteStats)
 		hotness.GET("/writes", hotnessController.GetRecentWrites)
 		hotness.GET("/ranking", hotnessController.GetHotnessRanking)

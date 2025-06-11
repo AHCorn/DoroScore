@@ -46,6 +46,24 @@ func (hc *HotnessController) GetHotMovies(c *gin.Context) {
 	})
 }
 
+// GetMovieRatingThreshold 获取电影评分阈值状态
+func (hc *HotnessController) GetMovieRatingThreshold(c *gin.Context) {
+	movieID := c.Param("id")
+	if movieID == "" {
+		utils.BadRequest(c, "电影ID不能为空")
+		return
+	}
+
+	// 获取阈值状态
+	status := services.GlobalRatingTracker.GetMovieRatingThresholdStatus(movieID)
+
+	utils.SuccessData(c, gin.H{
+		"status": "success",
+		"data":   status,
+		"message": "获取评分阈值状态成功",
+	})
+}
+
 // GetMovieHotness 获取指定电影的热度信息
 func (hc *HotnessController) GetMovieHotness(c *gin.Context) {
 	movieID := c.Param("id")

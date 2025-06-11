@@ -3,11 +3,11 @@ package services
 import (
 	"context"
 	"fmt"
+	"gohbase/models"
+	"gohbase/utils"
 	"sort"
 	"sync"
 	"time"
-
-	"gohbase/utils"
 
 	"github.com/tsuna/gohbase/hrpc"
 )
@@ -29,6 +29,9 @@ type MovieHotness struct {
 	LastWrite    time.Time `json:"lastWrite"`
 	AvgRating    float64   `json:"avgRating"`
 	HotnessScore float64   `json:"hotnessScore"` // 综合热度分数
+	// 新增字段用于10%阈值检查
+	LastRatingCount    int `json:"lastRatingCount"`    // 上次重新计算时的评分总数
+	NewWritesSinceCalc int `json:"newWritesSinceCalc"` // 自上次计算后的新增写入数
 }
 
 // RatingTrackerService 评分追踪服务
@@ -76,19 +79,90 @@ func (rts *RatingTrackerService) RecordRatingWrite(movieID, userID string, ratin
 	if hotness, exists := rts.movieStats[movieID]; exists {
 		hotness.WriteCount++
 		hotness.LastWrite = now
+		hotness.NewWritesSinceCalc++ // 增加新写入计数
 		// 更新平均评分（简单移动平均）
 		hotness.AvgRating = (hotness.AvgRating + rating) / 2
 	} else {
+		// 初始化电影统计，获取当前评分总数
+		ctx := context.Background()
+		currentRatingCount := rts.getCurrentRatingCount(ctx, movieID)
+		
 		rts.movieStats[movieID] = &MovieHotness{
-			MovieID:    movieID,
-			WriteCount: 1,
-			LastWrite:  now,
-			AvgRating:  rating,
+			MovieID:            movieID,
+			WriteCount:         1,
+			LastWrite:          now,
+			AvgRating:          rating,
+			LastRatingCount:    currentRatingCount,
+			NewWritesSinceCalc: 1,
 		}
 	}
 
+	// 检查是否需要重新计算评分（10%阈值）
+	rts.checkAndRecalculateRating(movieID)
+
 	// 重新计算热度分数
 	rts.calculateHotnessScore(movieID)
+}
+
+// getCurrentRatingCount 获取当前电影的评分总数
+func (rts *RatingTrackerService) getCurrentRatingCount(ctx context.Context, movieID string) int {
+	stats, err := utils.GetMovieStats(ctx, movieID)
+	if err != nil {
+		return 0
+	}
+	
+	if ratingCount, ok := stats["ratingCount"].(int); ok {
+		return ratingCount
+	}
+	return 0
+}
+
+// checkAndRecalculateRating 检查并重新计算评分（10%阈值逻辑）
+func (rts *RatingTrackerService) checkAndRecalculateRating(movieID string) {
+	hotness := rts.movieStats[movieID]
+	if hotness == nil {
+		return
+	}
+
+	// 计算10%阈值
+	threshold := int(float64(hotness.LastRatingCount) * 0.1)
+	if threshold < 1 {
+		threshold = 1 // 至少1个新评分才触发重新计算
+	}
+
+	// 检查是否达到阈值
+	if hotness.NewWritesSinceCalc >= threshold {
+		fmt.Printf("🔄 电影 %s 新增评分数 %d 达到阈值 %d (总评分数的10%%)，开始重新计算评分...\n", 
+			movieID, hotness.NewWritesSinceCalc, threshold)
+		
+		// 异步重新计算评分
+		go rts.recalculateMovieRating(movieID)
+	}
+}
+
+// recalculateMovieRating 重新计算电影评分
+func (rts *RatingTrackerService) recalculateMovieRating(movieID string) {
+	ctx := context.Background()
+	
+	// 重新计算并存储评分
+	avgRating, ratingCount, err := models.CalculateAndStoreMovieAvgRating(ctx, movieID)
+	if err != nil {
+		fmt.Printf("❌ 重新计算电影 %s 评分失败: %v\n", movieID, err)
+		return
+	}
+	
+	// 更新统计信息
+	rts.mu.Lock()
+	defer rts.mu.Unlock()
+	
+	if hotness, exists := rts.movieStats[movieID]; exists {
+		hotness.LastRatingCount = ratingCount
+		hotness.NewWritesSinceCalc = 0 // 重置新增计数
+		hotness.AvgRating = avgRating
+	}
+	
+	fmt.Printf("✅ 电影 %s 评分重新计算完成: 平均评分=%.2f, 总评分数=%d\n", 
+		movieID, avgRating, ratingCount)
 }
 
 // calculateHotnessScore 计算热度分数
@@ -285,6 +359,34 @@ func (rts *RatingTrackerService) WriteRatingToHBase(ctx context.Context, movieID
 	rts.RecordRatingWrite(movieID, userID, rating, source)
 
 	return nil
+}
+
+// GetMovieRatingThresholdStatus 获取电影评分阈值状态
+func (rts *RatingTrackerService) GetMovieRatingThresholdStatus(movieID string) map[string]interface{} {
+	rts.mu.RLock()
+	defer rts.mu.RUnlock()
+
+	if hotness, exists := rts.movieStats[movieID]; exists {
+		threshold := int(float64(hotness.LastRatingCount) * 0.1)
+		if threshold < 1 {
+			threshold = 1
+		}
+
+		return map[string]interface{}{
+			"movieId":              movieID,
+			"lastRatingCount":      hotness.LastRatingCount,
+			"newWritesSinceCalc":   hotness.NewWritesSinceCalc,
+			"threshold":            threshold,
+			"thresholdPercentage": "10%",
+			"needsRecalculation":   hotness.NewWritesSinceCalc >= threshold,
+			"progress":             fmt.Sprintf("%d/%d", hotness.NewWritesSinceCalc, threshold),
+		}
+	}
+
+	return map[string]interface{}{
+		"movieId": movieID,
+		"error":   "电影没有评分追踪数据",
+	}
 }
 
 // 全局实例
