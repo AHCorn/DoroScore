@@ -1,0 +1,60 @@
+server:
+  port: 8181
+  address: 0.0.0.0  # 允许外部访问
+
+spring:
+  application:
+    name: movie-rating-processor
+
+spark:
+  master: spark://localhost:7077  # Spark Master地址
+  app:
+    name: DoroScore Movie Rating Calculator
+  executor:
+    memory: 10G
+    instances: 8
+    cores: 2
+  driver:
+    memory: 10G
+    maxResultSize: 5G
+    host: localhost  # Driver主机地址，使用虚拟机hostname
+    bindAddress: 0.0.0.0  # 允许从任意地址连接
+  default:
+    parallelism: 8
+  shuffle:
+    partitions: 8
+  serializer: org.apache.spark.serializer.KryoSerializer
+  network:
+    timeout: 120s
+  ui:
+    port: 4040
+    bindAddress: 0.0.0.0  # Spark UI绑定地址
+
+hbase:
+  zookeeper:
+    quorum: bigdata
+    property:
+      clientPort: 2181
+
+logging:
+  level:
+    root: INFO
+    com.doroscore: DEBUG
+    org.apache.spark: INFO
+    com.doroscore.service: DEBUG
+    com.doroscore.processor: TRACE
+    com.doroscore.metrics: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %highlight(%-5level) %yellow(%logger{36}) - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %X{processingStep}%X{movieId}%X{compareResult}%msg%n"
+  file:
+    name: logs/movie-rating-processor.log
+    max-size: 10MB
+    max-history: 30
+
+metrics:
+  logging:
+    enabled: true
+    interval: 60
+    detailed: true
+    compare-with-previous: true 

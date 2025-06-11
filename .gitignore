@@ -105,4 +105,3 @@ dist/
 bin/ 
 config.yaml
 /static
-/Spark
